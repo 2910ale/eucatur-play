@@ -103,7 +103,7 @@ function WestPlayIntro() {
         <img src="/westplay.png" alt="" />
       </span>
       <span ref={wordmark} className="boot-intro-wordmark">
-        WestPlay
+        Eucatur Play
       </span>
     </div>
   )
