@@ -668,7 +668,7 @@ function LibraryShelfPage({
       shelf,
       ...(look.sort ? { sort: look.sort } : {}),
       ...(folder ? { folder: folder.id } : {}),
-      language,
+      language: language === 'tr' ? 'tr' : 'en',
     },
     useShownAgain(shown),
   )
