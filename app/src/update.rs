@@ -22,9 +22,11 @@ use westplay_host::log;
 /// The first look, once WestPlay has started (not to slow its start).
 const FIRST_LOOK: Duration = Duration::from_secs(30);
 /// Then this often.
-const EVERY: Duration = Duration::from_secs(6 * 60 * 60);
+const EVERY: Duration = Duration::from_secs(60 * 60);
 /// After a look that couldn't be made (no network, GitHub not answering, no release yet): again this soon.
 const RETRY: Duration = Duration::from_secs(30 * 60);
+/// Eucatur Play: an update found waits for the game to be closed, looked at this often, then installs itself.
+const WAIT_FOR_GAME: Duration = Duration::from_secs(2 * 60);
 
 /// The update found, if one was.
 #[derive(Default)]
@@ -69,6 +71,17 @@ pub fn watch(app: &AppHandle) {
         std::thread::sleep(FIRST_LOOK);
         loop {
             let looked = tauri::async_runtime::block_on(look(&app));
+            // Eucatur Play updates itself: as soon as the game is closed (the plugin the game loaded is the
+            // old one's), the update installs without asking, and Eucatur Play starts again.
+            if let Ok(Some(offer)) = &looked {
+                while westplay_setup::game::running() {
+                    std::thread::sleep(WAIT_FOR_GAME);
+                }
+                log!("[update] installing Eucatur Play {} on its own (the game is closed)", offer.version);
+                if let Err(error) = tauri::async_runtime::block_on(install_update(app.clone())) {
+                    log!("[update] it couldn't install on its own: {error}");
+                }
+            }
             std::thread::sleep(if looked.is_ok() { EVERY } else { RETRY });
         }
     });
