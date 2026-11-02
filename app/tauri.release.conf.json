@@ -10,7 +10,8 @@
       "../target/release/westplay.dll": "westplay.dll",
       "../LICENSE": "LICENSE.txt",
       "../THIRD_PARTY_NOTICES.md": "THIRD_PARTY_NOTICES.md",
-      "../THIRD_PARTY_LICENSES.md": "THIRD_PARTY_LICENSES.md"
+      "../THIRD_PARTY_LICENSES.md": "THIRD_PARTY_LICENSES.md",
+      "eucatur/InstaladorEucatur.exe": "eucatur/InstaladorEucatur.exe"
     },
     "windows": {
       "nsis": {

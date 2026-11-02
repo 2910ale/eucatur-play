@@ -49,6 +49,18 @@ function fromSite(origin: string): boolean {
   return SITES.some((site) => origin === site)
 }
 
+/** Whether a message's window is the tablet's frame or a frame inside it (a few levels down at most). */
+function insideFrame(source: MessageEventSource | null, tablet: Window | null): boolean {
+  if (!source || !tablet || !('parent' in source)) return false
+  let page: Window = source
+  for (let level = 0; level < 4; level++) {
+    if (page === tablet) return true
+    if (page.parent === page) return false
+    page = page.parent
+  }
+  return false
+}
+
 export function EucaturLayer({ shown }: { shown: boolean }) {
   const [state, setState] = useState<State>({ kind: 'asking' })
   const [attempt, setAttempt] = useState(0)
@@ -88,16 +100,16 @@ export function EucaturLayer({ shown }: { shown: boolean }) {
   }, [attempt])
 
   // The page's fields, typed with WestPlay's keyboard.
-  const typing = useRef<{ field: PageField; text: string } | null>(null)
+  // A field can be in the tablet itself or in one of its own frames (the GPS, the loads...): the answer goes
+  // back to the page it came from.
+  const typing = useRef<{ field: PageField; text: string; page: Window; origin: string } | null>(null)
   const send = useCallback((message: Record<string, unknown>) => {
-    const target = frame.current?.contentWindow
-    if (!target) return
-    for (const site of SITES) {
-      try {
-        target.postMessage(message, site)
-      } catch {
-        // Not that site: the other one.
-      }
+    const to = typing.current
+    if (!to) return
+    try {
+      to.page.postMessage(message, to.origin)
+    } catch {
+      // The page has gone.
     }
   }, [])
   const keyboardField = useCallback(
@@ -115,7 +127,7 @@ export function EucaturLayer({ shown }: { shown: boolean }) {
   )
   useEffect(() => {
     const listen = (event: MessageEvent) => {
-      if (!fromSite(event.origin) || event.source !== frame.current?.contentWindow) return
+      if (!fromSite(event.origin) || !insideFrame(event.source, frame.current?.contentWindow ?? null)) return
       const data = event.data as {
         tipo?: string
         id?: unknown
@@ -133,7 +145,7 @@ export function EucaturLayer({ shown }: { shown: boolean }) {
           value: typeof data.valor === 'string' ? data.valor.slice(0, 500) : '',
           kind: data.tipoCampo === 'search' ? 'search' : data.tipoCampo === 'go' ? 'go' : 'done',
         }
-        typing.current = { field: chosen, text: chosen.value }
+        typing.current = { field: chosen, text: chosen.value, page: event.source as Window, origin: event.origin }
         useKeyboard.getState().attach(keyboardField(chosen), language)
       } else if (data.tipo === 'eucatur:app' && isReleasedApp(data.app) && data.app !== 'eucatur') {
         go({ type: 'openApp', app: data.app })

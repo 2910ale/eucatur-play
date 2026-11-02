@@ -36,6 +36,17 @@ jobs:
       - name: Plugin do jogo (westplay.dll)
         run: cargo build --release -p westplay-plugin
 
+      # O Instalador Eucatur (Ponte, plugin de telemetria, Stream Deck) vai dentro do Eucatur Play: sempre o
+      # mais novo do painel da comunidade.
+      - name: Instalador Eucatur (vai junto)
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force app/eucatur | Out-Null
+          Invoke-WebRequest -Uri https://telemetria.comunidadeucatur.top/api/baixar/windows -OutFile app/eucatur/InstaladorEucatur.exe
+          $tamanho = (Get-Item app/eucatur/InstaladorEucatur.exe).Length
+          if ($tamanho -lt 1000000) { throw "Instalador Eucatur veio pequeno demais ($tamanho bytes)" }
+          "Instalador Eucatur: $tamanho bytes"
+
       - name: App e instalador
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}

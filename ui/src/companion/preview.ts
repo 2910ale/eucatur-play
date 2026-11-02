@@ -310,7 +310,12 @@ export function answer(command: string, args?: Record<string, unknown>): Promise
       signIn('appleMusic')
       return later(undefined)
     case 'open_support_page':
+      window.open('https://telemetria.comunidadeucatur.top/minha-telemetria', '_blank', 'noopener')
+      return later(undefined)
+    case 'open_westplay_support_page':
       window.open('https://kreosus.com/enes-less', '_blank', 'noopener')
+      return later(undefined)
+    case 'eucatur_install':
       return later(undefined)
     case 'app_log_place':
       return later('C:\\Users\\Player\\Documents\\WestPlay\\logs\\app.log')

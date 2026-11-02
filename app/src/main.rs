@@ -114,14 +114,40 @@ fn apple_music_check(accounts: State<Accounts>) {
     accounts.0.apple_music.request(AccountAction::Check);
 }
 
-/// The maker's Kreosus page, where players support WestPlay's development.
-const SUPPORT_PAGE: &str = "https://kreosus.com/enes-less";
+/// Eucatur Play: the community's site (the Comunidade Eucatur page).
+const SUPPORT_PAGE: &str = "https://telemetria.comunidadeucatur.top/minha-telemetria";
 
-/// Opens the support page (Support me) in the player's browser. The address is fixed here, so the companion
-/// can't open any other.
+/// WestPlay's maker's Kreosus page, where players support the original WestPlay (credited on the page).
+const WESTPLAY_SUPPORT_PAGE: &str = "https://kreosus.com/enes-less";
+
+/// Opens the community's site in the player's browser. The address is fixed here, so the companion can't open
+/// any other.
 #[tauri::command]
 fn open_support_page() {
     westplay_host::browser::open(SUPPORT_PAGE);
+}
+
+/// Opens the original WestPlay's support page (its maker's), from the credits.
+#[tauri::command]
+fn open_westplay_support_page() {
+    westplay_host::browser::open(WESTPLAY_SUPPORT_PAGE);
+}
+
+/// Eucatur Play: runs the Instalador Eucatur shipped beside it (resources `eucatur\InstaladorEucatur.exe`),
+/// which installs or updates the Ponte Eucatur, the telemetry plugin and the Stream Deck plugin. Its own window
+/// asks what it needs (the panel's code, the first time).
+#[tauri::command]
+fn eucatur_install(app: AppHandle) -> Result<(), String> {
+    let installer = app
+        .path()
+        .resource_dir()
+        .map_err(|error| error.to_string())?
+        .join("eucatur")
+        .join("InstaladorEucatur.exe");
+    if !installer.exists() {
+        return Err("O Instalador Eucatur não veio com esta cópia do Eucatur Play. Reinstale o Eucatur Play.".into());
+    }
+    std::process::Command::new(&installer).spawn().map(|_| ()).map_err(|error| error.to_string())
 }
 
 /// Where this run's `app.log` is (the About page): Documents\WestPlay\logs, or WestPlay's own data folder where
@@ -189,6 +215,8 @@ fn main() {
             apple_music_sign_out,
             apple_music_check,
             open_support_page,
+            open_westplay_support_page,
+            eucatur_install,
             app_log_place,
             customize::customize_list,
             customize::add_wallpapers,

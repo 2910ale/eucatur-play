@@ -167,3 +167,12 @@ FunctionEnd
     Abort "WebView2 Runtime: missing or damaged"
   ${EndIf}
 !macroend
+
+; Eucatur Play: after installing (or updating) itself, the Instalador Eucatur shipped with it installs or updates
+; the Ponte Eucatur, the telemetry plugin and the Stream Deck plugin. Already installed, it updates quietly
+; (--atualizar); the first time, its own window asks for the panel's code. It runs on its own, after this ends.
+!macro NSIS_HOOK_POSTINSTALL
+  ${If} ${FileExists} "$INSTDIR\eucatur\InstaladorEucatur.exe"
+    Exec '"$INSTDIR\eucatur\InstaladorEucatur.exe" --atualizar'
+  ${EndIf}
+!macroend

@@ -9,7 +9,7 @@ export const words: CompanionWords = {
     map: 'Mapa',
     setup: 'Configuração',
     about: 'Sobre',
-    support: 'Me apoie',
+    support: 'Eucatur',
   },
   state: {
     starting: 'Iniciando…',
@@ -47,7 +47,8 @@ export const words: CompanionWords = {
       noGame: 'Abra o Euro Truck Simulator 2, e o Eucatur Play se conecta a ele.',
       unsupported:
         'O Eucatur Play não aparece na tela deste caminhão. Instale o tablet Eucatur Play no seu caminhão e o Eucatur Play aparecerá nele.',
-      notInCab: 'O jogo está conectado. Sente-se na cabine com a parte elétrica ligada, e o Eucatur Play aparece na tela.',
+      notInCab:
+        'O jogo está conectado. Sente-se na cabine com a parte elétrica ligada, e o Eucatur Play aparece na tela.',
       live: 'O Eucatur Play está na tela do seu caminhão agora.',
       original: 'Seu caminhão mostra a própria tela, com um botão do Eucatur Play para voltar.',
     },
@@ -291,7 +292,10 @@ export const words: CompanionWords = {
     whatsNew: 'Novidades',
     later: 'Mais tarde',
     install: 'Atualizar',
-    closeGame: { title: 'Feche o jogo.', text: 'O Eucatur Play só pode ser atualizado enquanto o jogo não está aberto.' },
+    closeGame: {
+      title: 'Feche o jogo.',
+      text: 'O Eucatur Play só pode ser atualizado enquanto o jogo não está aberto.',
+    },
     downloading: 'Baixando',
     installing: 'Instalando; depois o Eucatur Play reinicia',
     failed: 'Não foi possível instalar a atualização.',
@@ -306,9 +310,9 @@ export const words: CompanionWords = {
     },
   },
   support: {
-    title: 'Me apoie',
-    sub: 'O Eucatur Play é gratuito. Se ele deixa suas viagens melhores, você pode apoiar o desenvolvimento no Kreosus, uma vez ou todo mês.',
-    button: 'Apoiar no Kreosus',
-    note: 'Abre o Kreosus no seu navegador.',
+    title: 'Comunidade Eucatur',
+    sub: 'A Ponte, a telemetria e o Stream Deck da comunidade, instalados por aqui, e os créditos do Eucatur Play.',
+    button: 'Abrir o site',
+    note: 'O site da comunidade abre no seu navegador.',
   },
 }
