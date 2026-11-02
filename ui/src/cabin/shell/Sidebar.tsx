@@ -2,7 +2,7 @@ import { formatGameTime } from '../../shared/format'
 import { useAppIcon, useScreenProfile } from '../state/hooks'
 import { type AppId, APPS } from '../state/apps'
 import { LAUNCH_STYLE, useCarriesLaunch } from '../state/launch'
-import { homeButtonTarget } from '../state/navigation'
+import { eucaturHomeTarget } from '../state/navigation'
 import { go, useCabin, useLive } from '../state/store'
 import { useText } from '../state/text'
 import { cabClock } from '../../shared/host'
@@ -14,7 +14,8 @@ import { cabClock } from '../../shared/host'
 export function Sidebar() {
   const recents = useCabin((state) => state.navigation.recents)
   const route = useCabin((state) => state.navigation.route)
-  const homeTarget = useCabin((state) => homeButtonTarget(state.navigation))
+  const homeTarget = useCabin((state) => eucaturHomeTarget(state.navigation))
+  const tabletIcon = useAppIcon(APPS.eucatur.icon)
   const gameTime = useLive((state) => (state.telemetry ? cabClock(state.telemetry, state.clockShift) : null))
   const shown = useScreenProfile().recents ?? 3
 
@@ -42,15 +43,16 @@ export function Sidebar() {
         >
           <TruckGlyph />
         </button>
-        {/* Its icon is where it goes: the app grid (Home) or the Dashboard. */}
+        {/* Its icon is where it goes: the app grid, or back to the Eucatur tablet. */}
         <button
           type="button"
           className="sidebar-button home-button"
-          aria-label={homeTarget === 'home' ? 'Home' : 'Dashboard'}
+          aria-label={homeTarget === 'home' ? 'Apps' : 'Eucatur'}
           onClick={() => go({ type: 'pressHome' })}
         >
+          {/* Eucatur Play: back to the tablet (its icon), or from the tablet to the app grid. */}
           <GridGlyph shown={homeTarget === 'home'} />
-          <DashboardGlyph shown={homeTarget === 'dashboard'} />
+          {homeTarget === 'eucatur' && <img className="home-tablet" src={tabletIcon} alt="" />}
         </button>
       </div>
     </aside>
@@ -92,25 +94,6 @@ function GridGlyph({ shown }: { shown: boolean }) {
   )
 }
 
-/** The Dashboard: one large tile and two small ones, like its layout. */
-function DashboardGlyph({ shown }: { shown: boolean }) {
-  return (
-    <svg
-      viewBox="0 0 24 24"
-      width="34"
-      height="34"
-      className={shown ? 'shown' : undefined}
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2.2"
-      aria-hidden
-    >
-      <rect x="3" y="4" width="10" height="16" rx="2.5" />
-      <rect x="15" y="4" width="6" height="7" rx="2" />
-      <rect x="15" y="13" width="6" height="7" rx="2" />
-    </svg>
-  )
-}
 
 /** Back to the truck: the front of a truck cab (our own glyph, not CarPlay's car). */
 function TruckGlyph() {

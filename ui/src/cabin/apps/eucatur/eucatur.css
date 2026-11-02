@@ -1,11 +1,3 @@
-/* Eucatur Play: the community's screen in a frame, filling the app's window. */
-.eucatur-app {
-  position: relative;
-  padding: 0;
-  background: #0b1220;
-  overflow: hidden;
-}
-
 .eucatur-frame {
   position: absolute;
   inset: 0;
@@ -58,4 +50,78 @@
   font: inherit;
   font-size: 24px;
   font-weight: 700;
+}
+
+/* Eucatur Play: the tablet is the base screen, the whole CarPlay area, kept loaded under the other apps. */
+.eucatur-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  background: #0b1220;
+  overflow: hidden;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.eucatur-layer.shown {
+  visibility: visible;
+  pointer-events: auto;
+}
+
+/* A warning from the tablet over another app: a banner at the top, touched to go to the tablet. */
+.shell .eucatur-warning {
+  position: absolute;
+  z-index: 30;
+  top: calc(var(--edge, 16px) + 6px);
+  left: 50%;
+  translate: -50% 0;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  max-width: min(760px, 80%);
+  padding: 14px 24px 14px 18px;
+  border: 0;
+  border-left: 6px solid #f2b630;
+  border-radius: 20px;
+  background: rgb(13 27 46 / 0.94);
+  color: #eef3ff;
+  font: inherit;
+  text-align: left;
+  box-shadow: 0 12px 40px rgb(0 0 0 / 0.45);
+  animation: eucatur-warning-in 320ms ease-out both;
+}
+
+.shell .eucatur-warning.urgent {
+  border-left-color: #ff5a4e;
+}
+
+.eucatur-warning .eucatur-mark {
+  flex: none;
+  width: 44px;
+  height: 44px;
+}
+
+.eucatur-warning > span {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 22px;
+  line-height: 1.25;
+}
+
+.eucatur-warning b {
+  font-size: 24px;
+}
+
+.eucatur-warning i {
+  font-style: normal;
+  font-weight: 700;
+  color: #f2b630;
+}
+
+@keyframes eucatur-warning-in {
+  from {
+    opacity: 0;
+    translate: -50% -24px;
+  }
 }

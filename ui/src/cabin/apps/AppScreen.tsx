@@ -5,7 +5,6 @@ import { type AppId, APPS } from '../state/apps'
 import { useLaunchStyle, whenTransitionEnds } from '../state/launch'
 import { useLanguage, useText } from '../state/text'
 import { isCopied, noteOpened, openedBefore, saveCopy, savedCopy } from './launchCopies'
-import { EucaturApp } from './eucatur/EucaturApp'
 import { MusicApp } from './music/MusicApp'
 import { SettingsApp } from './settings/SettingsApp'
 import { SpotifyApp } from './spotify/SpotifyApp'
@@ -71,7 +70,8 @@ function AppContent({ app }: { app: AppId }) {
   const text = useText()
   switch (app) {
     case 'eucatur':
-      return <EucaturApp />
+      // The tablet itself is a layer of its own, kept loaded (eucatur/EucaturApp.tsx `EucaturLayer`).
+      return <section className="app-panel" aria-hidden />
     case 'maps':
       return (
         <section className="app-panel maps-app" aria-label={text.apps.maps}>

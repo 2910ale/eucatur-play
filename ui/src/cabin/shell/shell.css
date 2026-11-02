@@ -511,3 +511,29 @@ body,
     height: 50px;
   }
 }
+
+/* Eucatur Play: the home button's tablet icon (back to the Eucatur tablet). */
+.home-button .home-tablet {
+  grid-area: 1 / 1;
+  width: 44px;
+  height: 44px;
+  border-radius: 12px;
+}
+
+/* On the Eucatur tablet the sidebar steps aside, as over a full-screen video, and peeks back at the left edge. */
+.carplay.on-tablet .sidebar {
+  z-index: 4;
+  transform: translateX(calc(-100% - var(--edge) - 24px));
+  visibility: hidden;
+  transition:
+    transform 450ms var(--motion-ease),
+    visibility 0s linear 450ms;
+}
+
+.carplay.on-tablet.peek-sidebar .sidebar {
+  transform: none;
+  visibility: visible;
+  transition:
+    transform 450ms var(--motion-ease),
+    visibility 0s;
+}

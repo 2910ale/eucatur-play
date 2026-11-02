@@ -79,7 +79,12 @@ export function Shell({ children, overlay, entering = false }: ShellProps) {
   const hole = youtubeHole ?? musicHole
   // Over a video full screen, pointing at the left edge brings the sidebar back (shell/sidebarPeek.ts).
   const carplay = useRef<HTMLDivElement>(null)
-  const peek = useSidebarPeek(watching, carplay)
+  // Eucatur Play: on the Eucatur tablet the sidebar steps aside the same way (the tablet has its own), and
+  // comes back pointing at the left edge.
+  const onTablet = useCabin(
+    (state) => state.navigation.route.kind === 'app' && state.navigation.route.app === 'eucatur',
+  )
+  const peek = useSidebarPeek(watching || onTablet, carplay)
   useEffect(() => {
     // Brought back, it goes again as soon as it's left, without the wait it has as YouTube opens.
     if (peek) useYouTube.setState({ holdSidebar: false })
@@ -90,7 +95,7 @@ export function Shell({ children, overlay, entering = false }: ShellProps) {
       {strip && !isInHost() && <GameStripPreview name={strip.name} />}
       <div
         ref={carplay}
-        className={`carplay${truckScreen ? ' handed-over' : ''}${watching ? ' watching' : ''}${watching && holdSidebar ? ' hold-sidebar' : ''}${peek ? ' peek-sidebar' : ''}`}
+        className={`carplay${truckScreen ? ' handed-over' : ''}${watching ? ' watching' : ''}${onTablet ? ' on-tablet' : ''}${watching && holdSidebar ? ' hold-sidebar' : ''}${peek ? ' peek-sidebar' : ''}`}
         style={{
           transformOrigin: `${button.x - insets.left}px ${button.y}px`,
           ...(hole && !watching && isInHost() ? holeMask(hole) : {}),
@@ -112,7 +117,7 @@ export function Shell({ children, overlay, entering = false }: ShellProps) {
         type="button"
         className={truckScreen ? 'return-button shown' : 'return-button'}
         style={{ left: button.x - RETURN_BUTTON_SIZE / 2, top: button.y - RETURN_BUTTON_SIZE / 2 }}
-        aria-label="WestPlay"
+        aria-label="Eucatur Play"
         aria-hidden={!truckScreen}
         tabIndex={truckScreen ? 0 : -1}
         onClick={() => useCabin.getState().setTruckScreen(false)}

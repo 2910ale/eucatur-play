@@ -25,10 +25,19 @@ export type NavigationAction =
 /** The most recent apps kept: a tall screen's sidebar shows five; most show three (`ScreenProfile.recents`). */
 export const RECENTS_LIMIT = 5
 
+/**
+ * Eucatur Play: the screen starts on the Eucatur tablet (the community's own screen, apps/eucatur), and
+ * the Home button always comes back to it; from it, Home goes to the app grid (`eucaturHomeTarget`).
+ */
 export const INITIAL_NAVIGATION: NavigationState = {
-  route: { kind: 'dashboard' },
-  recents: ['maps', 'music', 'youtube', 'spotify', 'youtubeMusic'],
-  base: 'dashboard',
+  route: { kind: 'app', app: 'eucatur' },
+  recents: ['eucatur', 'spotify', 'youtube', 'music', 'youtubeMusic'],
+  base: 'home',
+}
+
+/** Where the Home button goes in Eucatur Play: back to the tablet, or from the tablet to the app grid. */
+export function eucaturHomeTarget(state: NavigationState): 'eucatur' | 'home' {
+  return state.route.kind === 'app' && state.route.app === 'eucatur' ? 'home' : 'eucatur'
 }
 
 /**
@@ -56,8 +65,8 @@ export function navigate(state: NavigationState, action: NavigationAction): Navi
         recents: [action.app, ...state.recents.filter((app) => app !== action.app)].slice(0, RECENTS_LIMIT),
       }
     case 'pressHome': {
-      const target = homeButtonTarget(state)
-      return { ...state, route: { kind: target }, base: target }
+      if (eucaturHomeTarget(state) === 'home') return { ...state, route: { kind: 'home' }, base: 'home' }
+      return navigate(state, { type: 'openApp', app: 'eucatur' })
     }
     case 'showDashboard':
       return { ...state, route: { kind: 'dashboard' }, base: 'dashboard' }

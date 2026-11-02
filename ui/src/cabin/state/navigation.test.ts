@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  eucaturHomeTarget,
   homeButtonTarget,
   INITIAL_NAVIGATION,
   navigate,
@@ -9,59 +10,51 @@ import {
 } from './navigation'
 
 describe('navigate', () => {
+  it('starts on the Eucatur tablet', () => {
+    expect(INITIAL_NAVIGATION.route).toEqual({ kind: 'app', app: 'eucatur' })
+    expect(INITIAL_NAVIGATION.recents[0]).toBe('eucatur')
+  })
+
   it('opens an app and moves it to the front of the recents', () => {
     const state = navigate(INITIAL_NAVIGATION, { type: 'openApp', app: 'youtube' })
     expect(state.route).toEqual({ kind: 'app', app: 'youtube' })
-    expect(state.recents).toEqual(['youtube', 'maps', 'music', 'spotify', 'youtubeMusic'])
+    expect(state.recents).toEqual(['youtube', 'eucatur', 'spotify', 'music', 'youtubeMusic'])
   })
 
   it('adds a new app to the recents and keeps the limit', () => {
     const state = navigate(INITIAL_NAVIGATION, { type: 'openApp', app: 'settings' })
-    expect(state.recents).toEqual(['settings', 'maps', 'music', 'youtube', 'spotify'])
+    expect(state.recents).toEqual(['settings', 'eucatur', 'spotify', 'youtube', 'music'])
     expect(state.recents).toHaveLength(RECENTS_LIMIT)
   })
 
-  it('takes the Home button from an app back to where the app was opened from', () => {
+  it('takes the Home button from any app back to the Eucatur tablet', () => {
+    const inApp = navigate(INITIAL_NAVIGATION, { type: 'openApp', app: 'music' })
+    expect(eucaturHomeTarget(inApp)).toBe('eucatur')
+    const back = navigate(inApp, { type: 'pressHome' })
+    expect(back.route).toEqual({ kind: 'app', app: 'eucatur' })
+    expect(back.recents[0]).toBe('eucatur')
+  })
+
+  it('goes from the tablet to the app grid, and from the grid or the Dashboard back to the tablet', () => {
+    expect(eucaturHomeTarget(INITIAL_NAVIGATION)).toBe('home')
+    const grid = navigate(INITIAL_NAVIGATION, { type: 'pressHome' })
+    expect(grid.route).toEqual({ kind: 'home' })
+    expect(navigate(grid, { type: 'pressHome' }).route).toEqual({ kind: 'app', app: 'eucatur' })
+    const dashboard: NavigationState = { ...INITIAL_NAVIGATION, route: { kind: 'dashboard' }, base: 'dashboard' }
+    expect(navigate(dashboard, { type: 'pressHome' }).route).toEqual({ kind: 'app', app: 'eucatur' })
+  })
+
+  it('still says where an app was opened from', () => {
     const fromHome = navigate(
       { ...INITIAL_NAVIGATION, route: { kind: 'home' }, base: 'home' },
-      {
-        type: 'openApp',
-        app: 'music',
-      },
+      { type: 'openApp', app: 'music' },
     )
     expect(homeButtonTarget(fromHome)).toBe('home')
-    expect(navigate(fromHome, { type: 'pressHome' }).route).toEqual({ kind: 'home' })
-
-    const fromDashboard = navigate(INITIAL_NAVIGATION, { type: 'openApp', app: 'music' })
-    expect(homeButtonTarget(fromDashboard)).toBe('dashboard')
-    expect(navigate(fromDashboard, { type: 'pressHome' }).route).toEqual({ kind: 'dashboard' })
-  })
-
-  it('remembers the last of Home and Dashboard across apps', () => {
-    const home = navigate(INITIAL_NAVIGATION, { type: 'pressHome' })
-    const inApp = navigate(navigate(home, { type: 'openApp', app: 'maps' }), { type: 'openApp', app: 'music' })
-    expect(homeButtonTarget(inApp)).toBe('home')
-  })
-
-  it('toggles the Home button between Home and Dashboard', () => {
-    const home: NavigationState = { ...INITIAL_NAVIGATION, route: { kind: 'home' }, base: 'home' }
-    expect(homeButtonTarget(home)).toBe('dashboard')
-    const dashboard = navigate(home, { type: 'pressHome' })
-    expect(dashboard.route).toEqual({ kind: 'dashboard' })
-    expect(dashboard.base).toBe('dashboard')
-    expect(homeButtonTarget(dashboard)).toBe('home')
-    expect(navigate(dashboard, { type: 'pressHome' }).route).toEqual({ kind: 'home' })
-  })
-
-  it('does not touch the recents when navigating between Home and Dashboard', () => {
-    const state = navigate(INITIAL_NAVIGATION, { type: 'pressHome' })
-    expect(state.recents).toBe(INITIAL_NAVIGATION.recents)
   })
 
   it('shows the Dashboard', () => {
     const inApp: NavigationState = { ...INITIAL_NAVIGATION, route: { kind: 'app', app: 'maps' } }
     expect(navigate(inApp, { type: 'showDashboard' }).route).toEqual({ kind: 'dashboard' })
-    // Home itself, whether from an app or from Home (where the Home button would go to the Dashboard).
     expect(navigate(inApp, { type: 'showHome' }).route).toEqual({ kind: 'home' })
     const home = navigate(inApp, { type: 'showHome' })
     expect(navigate(home, { type: 'showHome' })).toEqual(home)

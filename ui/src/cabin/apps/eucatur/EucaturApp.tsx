@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { useLive } from '../../state/store'
+import { go, useLive } from '../../state/store'
+import { isReleasedApp } from '../../state/apps'
 import { languageOf } from '../../state/strings'
 import { type Typing, useKeyboard } from '../../keyboard/store'
 import './eucatur.css'
@@ -14,6 +15,10 @@ import './eucatur.css'
  * Typing: the page inside never has the keyboard (the game does). When one of its fields is chosen it tells this
  * app (`eucatur:campo`), which brings WestPlay's own keyboard up for it, and every change is sent back to the page
  * (`eucatur:texto`, `eucatur:enviar`).
+ *
+ * The tablet is Eucatur Play's base screen: it stays loaded under every other app (`shown` false only hides it),
+ * so its GPS, radio and warnings keep running. It opens Eucatur Play's own apps (`eucatur:app`: Spotify,
+ * YouTube...), and its warnings (`eucatur:aviso`) show over whatever app is open.
  */
 
 /** The Ponte Eucatur's local API (`apilocal.go`). */
@@ -21,6 +26,14 @@ const PONTE = 'http://127.0.0.1:47402'
 
 /** The site the Ponte signs in to: only messages from it are listened to. */
 const SITES = ['https://telemetria.comunidadeucatur.top', 'https://comunidadeucatur.top']
+
+/** A warning from the tablet, shown over another app. */
+interface Warning {
+  id: string
+  title: string
+  text: string
+  urgent: boolean
+}
 
 type State =
   { kind: 'asking' } | { kind: 'open'; url: string } | { kind: 'noBridge' } | { kind: 'refused'; reason: string }
@@ -36,11 +49,12 @@ function fromSite(origin: string): boolean {
   return SITES.some((site) => origin === site)
 }
 
-export function EucaturApp() {
+export function EucaturLayer({ shown }: { shown: boolean }) {
   const [state, setState] = useState<State>({ kind: 'asking' })
   const [attempt, setAttempt] = useState(0)
   const frame = useRef<HTMLIFrameElement>(null)
   const language = languageOf(useLive((live) => live.gameLanguage))
+  const [warning, setWarning] = useState<Warning | null>(null)
 
   // A sign-in link from the Ponte, every time the app opens (or "Tentar de novo").
   useEffect(() => {
@@ -102,7 +116,16 @@ export function EucaturApp() {
   useEffect(() => {
     const listen = (event: MessageEvent) => {
       if (!fromSite(event.origin) || event.source !== frame.current?.contentWindow) return
-      const data = event.data as { tipo?: string; id?: unknown; valor?: unknown; tipoCampo?: unknown } | null
+      const data = event.data as {
+        tipo?: string
+        id?: unknown
+        valor?: unknown
+        tipoCampo?: unknown
+        app?: unknown
+        titulo?: unknown
+        texto?: unknown
+        acao?: unknown
+      } | null
       if (!data || typeof data !== 'object') return
       if (data.tipo === 'eucatur:campo' && typeof data.id === 'string') {
         const chosen: PageField = {
@@ -112,6 +135,15 @@ export function EucaturApp() {
         }
         typing.current = { field: chosen, text: chosen.value }
         useKeyboard.getState().attach(keyboardField(chosen), language)
+      } else if (data.tipo === 'eucatur:app' && isReleasedApp(data.app) && data.app !== 'eucatur') {
+        go({ type: 'openApp', app: data.app })
+      } else if (data.tipo === 'eucatur:aviso' && typeof data.titulo === 'string') {
+        setWarning({
+          id: String(data.id ?? Date.now()).slice(0, 80),
+          title: data.titulo.slice(0, 140),
+          text: typeof data.texto === 'string' ? data.texto.slice(0, 280) : '',
+          urgent: data.acao === true,
+        })
       } else if (data.tipo === 'eucatur:soltou' && typeof data.id === 'string') {
         useKeyboard.getState().detach(`eucatur:${data.id.slice(0, 80)}`)
         if (typing.current?.field.id === data.id) typing.current = null
@@ -125,6 +157,20 @@ export function EucaturApp() {
     }
   }, [keyboardField, language])
 
+  // Hidden behind another app: its field lets go of the keyboard.
+  useEffect(() => {
+    if (shown || !typing.current) return
+    useKeyboard.getState().detach(`eucatur:${typing.current.field.id}`)
+    typing.current = null
+  }, [shown])
+
+  // A warning shows a while over the other apps (on the tablet, the tablet shows its own).
+  useEffect(() => {
+    if (!warning) return
+    const timer = setTimeout(() => setWarning(null), warning.urgent ? 12000 : 7000)
+    return () => clearTimeout(timer)
+  }, [warning])
+
   const retry = useMemo(
     () => () => {
       setState({ kind: 'asking' })
@@ -134,43 +180,62 @@ export function EucaturApp() {
   )
 
   return (
-    <section className="app-panel eucatur-app" aria-label="Eucatur">
-      {state.kind === 'open' ? (
-        <iframe
-          ref={frame}
-          className="eucatur-frame"
-          title="Eucatur"
-          src={state.url}
-          allow="autoplay; microphone; geolocation; clipboard-write"
-        />
-      ) : (
-        <div className="eucatur-status">
+    <>
+      <section className={shown ? 'eucatur-layer shown' : 'eucatur-layer'} aria-label="Eucatur" aria-hidden={!shown}>
+        {state.kind === 'open' ? (
+          <iframe
+            ref={frame}
+            className="eucatur-frame"
+            title="Eucatur"
+            src={state.url}
+            allow="autoplay; microphone; geolocation; clipboard-write"
+          />
+        ) : (
+          <div className="eucatur-status">
+            <EucaturMark />
+            {state.kind === 'asking' && <p>Conectando com a Ponte Eucatur…</p>}
+            {state.kind === 'noBridge' && (
+              <>
+                <h2>Ponte Eucatur não encontrada</h2>
+                <p>
+                  A tela Eucatur precisa da <b>Ponte Eucatur 0.35</b> ou mais nova rodando neste PC (ela liga sozinha
+                  com o jogo). Instale ou atualize pelo site: Meu caminhão → Instalador Eucatur.
+                </p>
+                <button type="button" className="eucatur-button" onClick={retry}>
+                  Tentar de novo
+                </button>
+              </>
+            )}
+            {state.kind === 'refused' && (
+              <>
+                <h2>Não deu para entrar</h2>
+                <p>{state.reason}</p>
+                <button type="button" className="eucatur-button" onClick={retry}>
+                  Tentar de novo
+                </button>
+              </>
+            )}
+          </div>
+        )}
+      </section>
+      {warning && !shown && (
+        <button
+          type="button"
+          className={warning.urgent ? 'eucatur-warning urgent' : 'eucatur-warning'}
+          onClick={() => {
+            setWarning(null)
+            go({ type: 'openApp', app: 'eucatur' })
+          }}
+        >
           <EucaturMark />
-          {state.kind === 'asking' && <p>Conectando com a Ponte Eucatur…</p>}
-          {state.kind === 'noBridge' && (
-            <>
-              <h2>Ponte Eucatur não encontrada</h2>
-              <p>
-                A tela Eucatur precisa da <b>Ponte Eucatur 0.35</b> ou mais nova rodando neste PC (ela liga sozinha com
-                o jogo). Instale ou atualize pelo site: Meu caminhão → Instalador Eucatur.
-              </p>
-              <button type="button" className="eucatur-button" onClick={retry}>
-                Tentar de novo
-              </button>
-            </>
-          )}
-          {state.kind === 'refused' && (
-            <>
-              <h2>Não deu para entrar</h2>
-              <p>{state.reason}</p>
-              <button type="button" className="eucatur-button" onClick={retry}>
-                Tentar de novo
-              </button>
-            </>
-          )}
-        </div>
+          <span>
+            <b>{warning.title}</b>
+            {warning.text && <span>{warning.text}</span>}
+            {warning.urgent && <i>Toque para resolver no tablet</i>}
+          </span>
+        </button>
       )}
-    </section>
+    </>
   )
 }
 

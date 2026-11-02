@@ -7,6 +7,7 @@ import { pauseSpotifyWithGame, spotifyPlayer } from './apps/spotify/pauseWithGam
 import { pauseYouTubeWithGame, youtubePlayer } from './apps/youtube/pauseWithGame'
 import { pauseYouTubeMusicWithGame, youtubeMusicPlayer } from './apps/youtubeMusic/pauseWithGame'
 import { AppScreen } from './apps/AppScreen'
+import { EucaturLayer } from './apps/eucatur/EucaturApp'
 import { BootScreen } from './boot/BootScreen'
 import { Dashboard } from './dashboard/Dashboard'
 import { Home } from './home/Home'
@@ -77,6 +78,8 @@ export function CabinApp() {
     >
       {/* The screen mounts when the power is on, and fades in after the boot. */}
       {powered && <Screens route={route} />}
+      {/* Eucatur Play's base: the Eucatur tablet, kept loaded under the other apps. */}
+      {powered && <EucaturLayer shown={route.kind === 'app' && route.app === 'eucatur'} />}
     </Shell>
   )
 }
