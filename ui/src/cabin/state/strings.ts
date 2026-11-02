@@ -938,6 +938,7 @@ export const STRINGS: Record<Language, Strings> = {
       back: 'Back',
     },
     apps: {
+      eucatur: 'Eucatur',
       maps: 'Maps',
       music: 'Music',
       spotify: 'Spotify',
@@ -1424,6 +1425,7 @@ export const STRINGS: Record<Language, Strings> = {
       back: 'Geri',
     },
     apps: {
+      eucatur: 'Eucatur',
       maps: 'Haritalar',
       music: 'Müzik',
       spotify: 'Spotify',

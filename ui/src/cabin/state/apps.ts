@@ -2,6 +2,7 @@ import type { AppIconRole } from '../../shared/icons'
 
 /** Every app WestPlay knows, in Home grid order. */
 export const APP_IDS = [
+  'eucatur',
   'maps',
   'music',
   'spotify',
@@ -23,6 +24,7 @@ export interface AppDefinition {
 }
 
 export const APPS: Record<AppId, AppDefinition> = {
+  eucatur: { id: 'eucatur', icon: 'eucatur' },
   maps: { id: 'maps', icon: 'maps' },
   music: { id: 'music', icon: 'music' },
   spotify: { id: 'spotify', icon: 'spotify' },

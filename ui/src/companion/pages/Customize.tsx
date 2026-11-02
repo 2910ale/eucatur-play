@@ -27,6 +27,7 @@ type Adding = 'wallpapers' | 'wallpaperFolder' | 'folder' | 'zip'
 
 /** The apps an icon set has icons for, in the order Home shows them, by their files' names. */
 const ICON_FILES: [AppIconRole, string][] = [
+  ['eucatur', 'eucatur'],
   ['maps', 'maps'],
   ['music', 'music'],
   ['spotify', 'spotify'],
