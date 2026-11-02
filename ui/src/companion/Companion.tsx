@@ -418,11 +418,11 @@ function SectionList({
 
   let place = 2
   return (
-    <nav ref={list} className="cp-list" aria-label="WestPlay">
+    <nav ref={list} className="cp-list" aria-label="Eucatur Play">
       <header className="cp-brand ob-in" style={n(0)}>
         <img src="/westplay.png" alt="" />
         <span>
-          <b>WestPlay</b>
+          <b>Eucatur Play</b>
           <span className="cp-state" data-state={state}>
             <i />
             {cw.state[state]}
