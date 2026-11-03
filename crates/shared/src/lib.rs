@@ -23,6 +23,46 @@ use windows::core::HSTRING;
 /// The bridge's name: its version in it, so an app and a plugin of different versions never share one (a
 /// bridge is laid out as whichever opened it first; one of another version, still held by a game or an app,
 /// would keep its layout until both are gone). [`BridgeMapping::matches`] still guards it.
+/// Eucatur Play (2026-11): the game or the app may run as administrator. A named object (the bridge, the frame
+/// texture) made by a side run as administrator would let only administrators in (that token's default),
+/// shutting out the other side run normally. So `make` gets security attributes open to the PC's signed-in
+/// users, at medium integrity (`None` if they couldn't be made or were refused: the default, as before).
+pub fn with_users_access<T>(
+    make: impl Fn(Option<*const windows::Win32::Security::SECURITY_ATTRIBUTES>) -> windows::core::Result<T>,
+) -> windows::core::Result<T> {
+    use windows::Win32::Foundation::{HLOCAL, LocalFree};
+    use windows::Win32::Security::Authorization::{ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1};
+    use windows::Win32::Security::{PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES};
+    let mut descriptor = PSECURITY_DESCRIPTOR::default();
+    // SAFETY: a static string; the descriptor is written by the call and freed once below.
+    let described = unsafe {
+        ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            windows::core::w!("D:(A;;GA;;;SY)(A;;GA;;;BA)(A;;GA;;;IU)(A;;GA;;;AU)S:(ML;;NW;;;ME)"),
+            SDDL_REVISION_1,
+            &mut descriptor,
+            None,
+        )
+    }
+    .is_ok();
+    let attributes = SECURITY_ATTRIBUTES {
+        nLength: size_of::<SECURITY_ATTRIBUTES>() as u32,
+        lpSecurityDescriptor: descriptor.0,
+        bInheritHandle: false.into(),
+    };
+    let mut made = make(described.then_some(&raw const attributes));
+    // Should Windows refuse those attributes, made as before (the default ones): never worse than it was.
+    if described && made.is_err() {
+        made = make(None);
+    }
+    if described {
+        // SAFETY: the descriptor the call above allocated, no longer used.
+        unsafe {
+            let _ = LocalFree(Some(HLOCAL(descriptor.0)));
+        }
+    }
+    made
+}
+
 pub fn bridge_name() -> String {
     format!("Local\\WestPlay.Bridge.v{BRIDGE_VERSION}")
 }
@@ -774,14 +814,16 @@ impl BridgeMapping {
         // SAFETY: the mapping is the bridge's size, so the view holds one `Bridge`, zeroed when new (a valid
         // `Bridge`: atomics and plain data); it's closed if it can't be viewed.
         unsafe {
-            let handle = CreateFileMappingW(
-                INVALID_HANDLE_VALUE,
-                None,
-                PAGE_READWRITE,
-                0,
-                size as u32,
-                &HSTRING::from(bridge_name()),
-            )?;
+            let handle = with_users_access(|attributes| {
+                CreateFileMappingW(
+                    INVALID_HANDLE_VALUE,
+                    attributes,
+                    PAGE_READWRITE,
+                    0,
+                    size as u32,
+                    &HSTRING::from(bridge_name()),
+                )
+            })?;
             let view = MapViewOfFile(handle, FILE_MAP_ALL_ACCESS, 0, 0, size);
             if view.Value.is_null() {
                 let error = windows::core::Error::from_thread();

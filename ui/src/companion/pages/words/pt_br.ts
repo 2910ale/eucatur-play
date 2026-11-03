@@ -71,7 +71,7 @@ export const words: CompanionWords = {
     gpuNote: 'Se a tela travar, escolha outra placa. O Eucatur Play reinicia nela.',
     elevated: {
       title: 'O jogo está rodando como administrador',
-      text: 'Assim o Eucatur Play não vê a rota, as orientações nem o clima do jogo. Inicie o jogo normalmente, não como administrador.',
+      text: 'O Eucatur Play vai reabrir sozinho como administrador para ver a rota, as orientações e o clima. Na primeira vez, clique em Sim no aviso do Windows.',
     },
     banners: {
       live: { title: 'Conectado', text: 'O Eucatur Play está na tela do seu caminhão' },

@@ -11,7 +11,7 @@ serde = ["dep:serde"]
 
 [dependencies]
 serde = { version = "1", features = ["derive"], optional = true }
-windows = { version = "0.62", features = ["Win32_Foundation", "Win32_System_Memory", "Win32_Security"] }
+windows = { version = "0.62", features = ["Win32_Foundation", "Win32_System_Memory", "Win32_Security", "Win32_Security_Authorization"] }
 
 [lints]
 workspace = true

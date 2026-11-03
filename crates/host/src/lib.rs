@@ -11,6 +11,7 @@ mod camera;
 mod capture;
 mod cursor;
 pub mod customize;
+pub mod elevate;
 pub mod fitted;
 mod game_settings;
 mod gpu;
@@ -514,9 +515,12 @@ pub fn run(mut config: Config, stop: Arc<AtomicBool>) -> Result<(), Error> {
             let pid = bridge.bridge().plugin.pid.load(Ordering::Relaxed);
             if pid != elevated_pid {
                 elevated_pid = pid;
-                game_elevated = is_elevated(pid);
+                // Eucatur Play: run as administrator itself (elevate.rs), it reads a game run as administrator.
+                game_elevated = is_elevated(pid) && !elevate::is_self_elevated();
                 if game_elevated {
                     log!("the game runs as administrator: WestPlay can't read its route, guidance or weather");
+                    // Eucatur Play: then it starts itself again as administrator too (elevate.rs).
+                    elevate::game_is_elevated();
                 }
             }
             let under_truckersmp = if !running {

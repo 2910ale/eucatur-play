@@ -187,8 +187,21 @@ fn main() {
     }
     // One WestPlay at a time: a second only says so (held until the app ends). Before the log starts: a second
     // making the log anew would empty the running one's.
-    let Some(_instance) = westplay_host::Instance::claim() else {
-        westplay_host::tell_already_running();
+    // Eucatur Play: started again as administrator (the game runs as administrator, elevate.rs): the one before
+    // it is ending, so it's waited for, a few seconds, and nothing is said if it doesn't end.
+    let by_task = westplay_host::elevate::started_by_task(&args);
+    let mut instance = westplay_host::Instance::claim();
+    for _ in 0..40 {
+        if instance.is_some() || !by_task {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(250));
+        instance = westplay_host::Instance::claim();
+    }
+    let Some(_instance) = instance else {
+        if !by_task {
+            westplay_host::tell_already_running();
+        }
         return;
     };
     westplay_host::log::init();

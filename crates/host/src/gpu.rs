@@ -100,11 +100,11 @@ impl SharedFrame {
             let mutex = texture.cast()?;
             let name = HSTRING::from(westplay_shared::frame_texture_name(generation));
             // The name stays resolvable for as long as this handle is open.
-            let handle = texture.cast::<IDXGIResource1>()?.CreateSharedHandle(
-                None,
-                (DXGI_SHARED_RESOURCE_READ | DXGI_SHARED_RESOURCE_WRITE).0,
-                &name,
-            )?;
+            // Open to the game whether it or Eucatur Play runs as administrator (westplay_shared::with_users_access).
+            let resource = texture.cast::<IDXGIResource1>()?;
+            let handle = westplay_shared::with_users_access(|attributes| {
+                resource.CreateSharedHandle(attributes, (DXGI_SHARED_RESOURCE_READ | DXGI_SHARED_RESOURCE_WRITE).0, &name)
+            })?;
             Ok(Self { texture, mutex, width, height, handle })
         }
     }
