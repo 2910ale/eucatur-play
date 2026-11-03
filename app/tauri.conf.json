@@ -51,7 +51,7 @@
   },
   "plugins": {
     "updater": {
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEMzNEQyRTk3RjA3OTFDQTMKUldTakhIbndseTVOdzZmU09KL0hldElnQkh0M2NCTVA3aVo4amtrQ0pnN2tuMzR6VWtweDZzbEoK",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEMxMEQ5RUFGM0I1RUVCOUQKUldTZDYxNDdyNTROd1J3SDhISTNMVWVGV29TQ0xVUC9jLysxZk1YYzdoeFlHS3pQRUxFc0cxUG0K",
       "endpoints": [
         "https://github.com/2910ale/eucatur-play/releases/latest/download/latest.json"
       ],
