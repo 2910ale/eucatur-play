@@ -42,8 +42,11 @@ export function isAppId(value: unknown): value is AppId {
 }
 
 /** Not in this release: Podcasts, Phone and Messages come in the one after 1.0 (PLAN.md). Their ids stay (their
- * icons, players' icon sets), but they're not on Home, and a saved screen or recent can't open them. */
-const NEXT_RELEASE: ReadonlySet<AppId> = new Set<AppId>(['podcasts', 'phone', 'messages'])
+ * icons, players' icon sets), but they're not on Home, and a saved screen or recent can't open them.
+ *
+ * Eucatur Play: Maps is off too — the route is the Ponte Eucatur's GPS, inside the Eucatur tablet (the
+ * game's own map isn't built: westplay_host::maps). */
+const NEXT_RELEASE: ReadonlySet<AppId> = new Set<AppId>(['maps', 'podcasts', 'phone', 'messages'])
 
 /** The apps this release has, in Home grid order. */
 export const RELEASED_APP_IDS: readonly AppId[] = APP_IDS.filter((id) => !NEXT_RELEASE.has(id))

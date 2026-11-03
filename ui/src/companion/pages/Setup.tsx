@@ -11,7 +11,7 @@ import { type PageProps, useGameCheck } from './page'
  * screen, the check's scan while the game is looked at, and WestPlay booting again after a reinstall.
  */
 export function Setup(props: PageProps) {
-  const { setup, cw, check, checked, uninstall, tutorial } = props
+  const { setup, cw, check, checked, uninstall } = props
   const screen = useScreen()
   const words = useWords()
   const w = cw.setup
@@ -144,7 +144,6 @@ export function Setup(props: PageProps) {
       )}
       {(installError ?? error) && <Note tone="bad">{installError ?? error}</Note>}
       <Group place={6}>
-        <Row title={w.tutorial} link onClick={tutorial} />
         <Row title={cw.uninstall.row} danger onClick={uninstall} />
       </Group>
     </Panel>

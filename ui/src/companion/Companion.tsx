@@ -79,7 +79,8 @@ export function Companion() {
 
 const SECTIONS: SectionId[][] = [
   ['screen', 'controls', 'customize'],
-  ['accounts', 'map'],
+  // Eucatur Play: no Map section (WestPlay's own map is off; the GPS is the Ponte Eucatur's).
+  ['accounts'],
   ['setup', 'about'],
   ['support'],
 ]

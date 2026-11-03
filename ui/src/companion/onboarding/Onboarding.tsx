@@ -1,5 +1,4 @@
-import { useContext, useEffect, useRef, useState } from 'react'
-import { hvtMapMessage } from '../../cabin/maps/blockedMap'
+import { useEffect, useRef, useState } from 'react'
 import {
   checkGame,
   defaultMapAddress,
@@ -23,24 +22,10 @@ import {
   youtubeSignOut,
 } from '../useHostStatus'
 import { DEFAULT_KEY, type SettingsState } from '../useSettings'
-import { memoryNote } from '../pages/page'
 import { companionWords } from '../pages/words'
 import '../room/room.css'
 import { type Banner, GlassCursor, type Pose, TruckScreen } from '../room/TruckScreen'
-import {
-  Button,
-  Checking,
-  Cross,
-  Group,
-  KeyChooser,
-  MapProgress,
-  Note,
-  Panel,
-  ProfileRow,
-  Row,
-  Status,
-  Tick,
-} from '../room/parts'
+import { Button, Checking, Cross, Group, KeyChooser, Note, Panel, ProfileRow, Row, Status, Tick } from '../room/parts'
 import {
   banner,
   explain,
@@ -49,7 +34,6 @@ import {
   RoomText,
   useChecking,
   useGameRunning,
-  useGlidingProgress,
   useSignOut,
   useWords,
   WordsContext,
@@ -65,14 +49,14 @@ import {
   useTour,
 } from '../room/screen'
 import { useDemo } from '../room/useDemo'
-import { count, languageOf, list, percent, wordsFor } from './words'
+import { count, languageOf, list, wordsFor } from './words'
 
 const STEPS = [
   'welcome',
   'game',
   'check',
   'install',
-  'map',
+  // Eucatur Play: no 'map' step — WestPlay's own map is off (the GPS is the Ponte Eucatur's).
   'controls',
   'accounts',
   'spotify',
@@ -86,7 +70,6 @@ const POSES: Record<StepId, Pose> = {
   game: 'side',
   check: 'side',
   install: 'side',
-  map: 'side',
   controls: 'side',
   accounts: 'side',
   spotify: 'side',
@@ -276,7 +259,6 @@ export function Onboarding({
             {step === 'install' && game && (
               <Install game={game} report={installed} reported={setInstalled} next={next} back={back} />
             )}
-            {step === 'map' && <MapStep status={status} next={next} back={back} />}
             {step === 'controls' && <Controls settings={settings} next={next} back={back} />}
             {step === 'accounts' && <Accounts status={status} next={next} back={back} />}
             {step === 'spotify' && <ServiceSignIn service="spotify" status={status} next={next} back={back} />}
@@ -672,87 +654,6 @@ function Install({
   )
 }
 
-function MapStep({ status, next, back }: { status: HostStatus | null; next(): void; back?: () => void }) {
-  const map = status?.map ?? { state: 'unknown' as const }
-  const building = map.state === 'building' ? map : null
-  const shown = useGlidingProgress(building?.done ?? null, building?.stage ?? null)
-  // Seen building on this visit: once it's ready, its stages stay up, all ticked.
-  const [watched, setWatched] = useState(false)
-  if (building && !watched) setWatched(true)
-  const settled = map.state === 'ready' || map.state === 'notAllowed' || map.state === 'failed'
-  const { words, code } = useContext(WordsContext)
-  const w = words.map
-  // The HVT message, its two sentences as the banner's title and line.
-  const [hvtTitle, hvtText] = [
-    ...new Intl.Segmenter(words.locale, { granularity: 'sentence' }).segment(hvtMapMessage(code)),
-  ].map((part) => part.segment.trim())
-  useScreenAt(
-    'maps',
-    GLOW.maps,
-    map.state === 'building'
-      ? {
-          title: w.banners.building,
-          detail: `${w.stages[map.stage].now} · ${percent(words, shown)}`,
-          progress: shown,
-        }
-      : map.state === 'ready'
-        ? banner(w.banners.ready)
-        : map.state === 'waitingForGame'
-          ? banner(w.banners.waiting)
-          : map.state === 'waitingForMemory'
-            ? banner(companionWords(code).map.memory.banner)
-            : map.state === 'notAllowed'
-              ? { title: hvtTitle, detail: hvtText }
-              : map.state === 'failed'
-                ? banner(w.banners.failed)
-                : { title: w.banners.getting, busy: true },
-  )
-
-  useTour(
-    map.state === 'ready'
-      ? [
-          { tap: ON_SCREEN.zoomOut, then: 700 },
-          { tap: ON_SCREEN.zoomOut, then: 700 },
-          { tap: ON_SCREEN.zoomOut, then: 3200 },
-          { tap: ON_SCREEN.zoomIn, then: 700 },
-          { tap: ON_SCREEN.zoomIn, then: 700 },
-          { tap: ON_SCREEN.zoomIn, then: 3600 },
-        ]
-      : null,
-    1800,
-  )
-
-  return (
-    <Panel
-      place="side"
-      title={map.state === 'ready' ? w.titleReady : w.title}
-      sub={w.sub}
-      back={back}
-      action={
-        <Button onClick={next} disabled={!settled}>
-          {words.continue}
-        </Button>
-      }
-    >
-      {(building || (watched && map.state === 'ready')) && (
-        <MapProgress shown={shown} stage={building?.stage ?? null} finished={map.state === 'ready'} />
-      )}
-      {map.state === 'failed' && <Note tone="bad">{map.error}</Note>}
-      {map.state === 'waitingForGame' && (
-        <Note>
-          <b>{w.waiting.title}</b> {w.waiting.text}
-        </Note>
-      )}
-      {map.state === 'waitingForMemory' && (
-        <Note>
-          <b>{companionWords(code).map.memory.note.title}</b>{' '}
-          {memoryNote(companionWords(code), words.locale, map.needed, map.free)}
-        </Note>
-      )}
-    </Panel>
-  )
-}
-
 function Controls({ settings, next, back }: { settings: SettingsState; next(): void; back?: () => void }) {
   const current = settings.settings
   const words = useWords()
@@ -936,10 +837,9 @@ function TutorialIntro({
       back={back}
       action={
         <>
-          <Button glass onClick={() => finish('launch')}>
-            {w.skip}
-          </Button>
-          <Button onClick={() => finish('lesson')}>{w.start}</Button>
+          {/* Eucatur Play: no tutorial (its lesson asked for WestPlay's Home, which the Eucatur tablet
+              covers): the onboarding ends here. */}
+          <Button onClick={() => finish('launch')}>{companionWords(code).tutorial.finish}</Button>
         </>
       }
     />

@@ -185,6 +185,9 @@ impl SetUpGame {
     }
 }
 
+/// Whether WestPlay builds its own map from the game (off in Eucatur Play: the GPS is the Ponte Eucatur's).
+const MAPA_NATIVO: bool = false;
+
 pub struct MapWatch {
     pub updates: Receiver<MapUpdate>,
     /// The map the played profile plays, as worked out.
@@ -202,9 +205,15 @@ impl MapWatch {
         let (sender, updates) = mpsc::channel();
         let played = PlayedMap::default();
         let telling = played.clone();
-        let _ = std::thread::Builder::new()
-            .name("westplay-maps".into())
-            .spawn(move || watch(&maps, &game, &sender, &telling));
+        // Eucatur Play: the game's own map isn't built (its Maps app is off; the route is the Ponte Eucatur's
+        // GPS, in the Eucatur tablet), so no thread reads the game's files or takes the PC's memory for it.
+        if MAPA_NATIVO {
+            let _ = std::thread::Builder::new()
+                .name("westplay-maps".into())
+                .spawn(move || watch(&maps, &game, &sender, &telling));
+        } else {
+            drop((maps, game, sender, telling));
+        }
         Self { updates, played }
     }
 }
