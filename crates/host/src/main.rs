@@ -38,6 +38,7 @@ fn main() {
         // Nothing kept: the standalone host has no settings file.
         on_settings: Box::new(|_| {}),
         customize_changed: Arc::default(),
+        on_aviso: Box::new(|_| {}),
         // No map for the standalone host: the app's setup chooses the game.
         game: Arc::default(),
         on_status: Box::new(|status| {

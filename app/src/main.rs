@@ -5,6 +5,7 @@
 
 mod customize;
 mod maps;
+mod overlay;
 mod setup;
 mod update;
 
@@ -287,6 +288,7 @@ fn main() {
             app.manage(setup);
             app.manage(std::sync::Mutex::new(host));
             update::watch(app.handle());
+            overlay::make(app.handle());
             Ok(())
         })
         .build(tauri::generate_context!())
@@ -360,6 +362,7 @@ fn start_host(
             let status_events = events.clone();
             let (settings_events, settings_dir) = (events.clone(), looks.config_dir.clone());
             let customize_changed = looks.customize_changed.clone();
+            let aviso_events = events.clone();
             let run = std::thread::Builder::new().name("westplay-host".into()).spawn(move || {
                 let config = Config {
                     width: SCREEN_WIDTH,
@@ -381,6 +384,8 @@ fn start_host(
                         let _ = settings_events.emit("settings-changed", settings);
                     }),
                     customize_changed,
+                    // Eucatur Play: the Eucatur warnings over the game (overlay.rs).
+                    on_aviso: Box::new(move |aviso| overlay::show(&aviso_events, aviso)),
                 };
                 match westplay_host::run(config, stop) {
                     Ok(()) => Ended::Stopped,

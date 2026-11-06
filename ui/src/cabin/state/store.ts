@@ -81,6 +81,8 @@ interface CabinState {
    * (Recommended, flat): kept with WestPlay's settings, the host sends them. */
   equalizer: Equalizer
   equalizerCustom: boolean
+  /** Eucatur Play: the Eucatur warnings over the other apps on the truck's screen (the companion's Eucatur page). */
+  eucaturAvisosTela: boolean
   power: PowerState
   /**
    * The screen is handed back to the truck (its stock screen shows, with WestPlay's button to come back),
@@ -127,6 +129,7 @@ export const useCabin = create<CabinState>()(
       oemMode: 'auto',
       equalizer: FLAT,
       equalizerCustom: false,
+      eucaturAvisosTela: true,
       power: INITIAL_POWER,
       navigate: (action) => set((state) => ({ navigation: navigate(state.navigation, action) })),
       setAppearanceMode: (appearanceMode) => set({ appearanceMode }),
@@ -465,6 +468,7 @@ function receiveHostMessage(now: () => number): (message: HostMessage) => void {
         useCabin.setState({
           equalizer: toEqualizer(message.equalizer),
           equalizerCustom: message.equalizerCustom === true,
+          eucaturAvisosTela: message.eucaturAvisosTela !== false,
         })
         setIcons({
           iconSet: message.iconSet ?? null,

@@ -102,6 +102,8 @@ export default defineConfig({
       input: {
         companion: resolve(import.meta.dirname, 'index.html'),
         cabin: resolve(import.meta.dirname, 'cabin.html'),
+        // Eucatur Play (nov/2026): the warnings over the game (a see-through window, app/src/overlay.rs).
+        aviso: resolve(import.meta.dirname, 'aviso.html'),
       },
     },
   },

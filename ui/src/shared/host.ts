@@ -108,6 +108,8 @@ export type HostMessage =
       /** The player's own tone curve (Settings › Equalizer), and whether it plays (Custom) or not (Recommended). */
       equalizer?: Equalizer
       equalizerCustom?: boolean
+      /** Eucatur Play: the Eucatur warnings shown on the truck's screen over the other apps (default on). */
+      eucaturAvisosTela?: boolean
     }
   /** The player's own wallpapers and icon sets (shared/customize.ts), their files at `CABIN_FILES`. */
   | { type: 'customize'; wallpapers: CustomWallpaper[]; iconSets: IconSet[] }
@@ -295,6 +297,8 @@ export type PageMessage =
   /** The text field selected, a number that changes with every selection (0: none), for the player's own
    * keyboard to type into while the truck stands still. */
   | { type: 'typing'; selection: number }
+  /** Eucatur Play: a warning from the Eucatur tablet, for the window over the game (app/src/overlay.rs). */
+  | { type: 'eucaturAviso'; title: string; text: string; urgent: boolean }
   /** A command for YouTube's player, or a question for YouTube (answered with `youtubeAnswer`). */
   | { type: 'youtube'; command: YouTubeCommand }
   /** A command for Spotify's web player (`westplay_host::spotify::Command`): `show` places it, in the frame's

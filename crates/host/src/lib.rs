@@ -12,6 +12,7 @@ mod capture;
 mod cursor;
 pub mod customize;
 pub mod elevate;
+pub mod overlay;
 pub mod fitted;
 mod game_settings;
 mod gpu;
@@ -218,6 +219,17 @@ pub struct Config {
     pub customize_changed: Arc<std::sync::atomic::AtomicU64>,
     /// The game WestPlay is set up in (the companion's setup sets it): its map is built for the cab.
     pub game: Arc<maps::SetUpGame>,
+    /// Eucatur Play (nov/2026): a warning from the Eucatur tablet to show over the game (the app's window over
+    /// it), called only with the game running and showing and the player keeping that on.
+    pub on_aviso: Box<dyn FnMut(&EucaturAviso) + Send>,
+}
+
+/// Eucatur Play: a warning from the Eucatur tablet, for the window over the game.
+#[derive(Clone, Debug, PartialEq, serde::Serialize)]
+pub struct EucaturAviso {
+    pub title: String,
+    pub text: String,
+    pub urgent: bool,
 }
 
 struct Pipeline {
@@ -878,6 +890,14 @@ pub fn run(mut config: Config, stop: Arc<AtomicBool>) -> Result<(), Error> {
                 }
                 Some(PageMessage::Typing { selection }) => {
                     bridge.bridge().typing.selection.store(selection, Ordering::Release);
+                }
+                Some(PageMessage::EucaturAviso { title, text, urgent }) => {
+                    let pid = bridge.bridge().plugin.pid.load(Ordering::Relaxed);
+                    if config.settings.get().eucatur.avisos_por_cima && game_running && pid != 0 && is_shown(pid) {
+                        let title: String = title.chars().take(140).collect();
+                        let text: String = text.chars().take(280).collect();
+                        (config.on_aviso)(&EucaturAviso { title, text, urgent });
+                    }
                 }
                 Some(PageMessage::Routes { id, node }) => {
                     let to = u64::from_str_radix(&node, 16).unwrap_or(0);
@@ -1973,6 +1993,7 @@ fn settings_message(settings: &settings::Settings) -> String {
         "iconStyle": settings.look.icon_style,
         "equalizer": settings.sound.equalizer.clamped(),
         "equalizerCustom": settings.sound.custom,
+        "eucaturAvisosTela": settings.eucatur.avisos_tela,
     })
     .to_string()
 }
@@ -2035,6 +2056,14 @@ enum PageMessage {
     /// What stopping at each of these map nodes (uids in hex) would add to the trip the game's route makes
     /// (`planner`); `{"type":"detours"}` comes back with `id`.
     Detours { id: u32, nodes: Vec<String> },
+    /// Eucatur Play: a warning from the Eucatur tablet, for the window over the game (`Config::on_aviso`).
+    EucaturAviso {
+        title: String,
+        #[serde(default)]
+        text: String,
+        #[serde(default)]
+        urgent: bool,
+    },
 }
 
 /// A route being handed to the game's GPS: the page's request, the hand-over (the route picked and the
@@ -2315,6 +2344,10 @@ mod tests {
             Some(PageMessage::Youtube { command: crate::youtube::Command::Pause })
         );
         assert_eq!(parse_page_message(r#"{"type":"other"}"#), None);
+        assert_eq!(
+            parse_page_message(r#"{"type":"eucaturAviso","title":"Avaria","text":"Pneu furado","urgent":true}"#),
+            Some(PageMessage::EucaturAviso { title: "Avaria".into(), text: "Pneu furado".into(), urgent: true })
+        );
         assert_eq!(parse_page_message("not json"), None);
     }
 

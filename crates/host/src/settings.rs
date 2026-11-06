@@ -33,6 +33,28 @@ pub struct Settings {
     pub graphics: GraphicsSettings,
     #[serde(deserialize_with = "lenient")]
     pub sound: SoundSettings,
+    /// Eucatur Play (nov/2026): where the Eucatur warnings show in the game.
+    #[serde(deserialize_with = "lenient")]
+    pub eucatur: EucaturSettings,
+}
+
+/// Eucatur Play: the Eucatur tablet's warnings in the game (the companion's Eucatur page), both on by default.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct EucaturSettings {
+    /// On the truck's screen, over the other apps (Spotify, YouTube...).
+    #[serde(deserialize_with = "lenient")]
+    pub avisos_tela: bool,
+    /// Over the game itself, in a see-through window on top of it (`app/src/overlay.rs`): seen with the game in
+    /// a window or borderless full screen.
+    #[serde(deserialize_with = "lenient")]
+    pub avisos_por_cima: bool,
+}
+
+impl Default for EucaturSettings {
+    fn default() -> Self {
+        Self { avisos_tela: true, avisos_por_cima: true }
+    }
 }
 
 /// The sound the players play: its tone (the cab's Settings › Equalizer), the same in every truck. As iOS's

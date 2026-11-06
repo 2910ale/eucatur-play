@@ -30,6 +30,13 @@ export interface Settings {
   graphics: {
     gpu: string | null
   }
+  /** Eucatur Play (nov/2026): where the Eucatur warnings show in the game (both on by default). */
+  eucatur?: {
+    /** On the truck's screen, over the other apps. */
+    avisosTela: boolean
+    /** Over the game itself (a see-through window on top of it). */
+    avisosPorCima: boolean
+  }
 }
 
 /** Mirrors `westplay_host::settings::TruckStrip`: the truck's own strip beside WestPlay, kept or not. */

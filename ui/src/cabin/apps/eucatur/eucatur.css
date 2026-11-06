@@ -91,8 +91,22 @@
   animation: eucatur-warning-in 320ms ease-out both;
 }
 
+.shell .eucatur-warning.action {
+  border-left-color: #ff5a4e;
+}
+
+/* Urgent (a breakdown, a blitz, a red alert, nov/2026): it blinks. */
 .shell .eucatur-warning.urgent {
   border-left-color: #ff5a4e;
+  animation:
+    eucatur-warning-in 320ms ease-out both,
+    eucatur-warning-blink 0.9s ease-in-out 320ms infinite;
+}
+
+@keyframes eucatur-warning-blink {
+  50% {
+    background: rgb(140 20 28 / 0.95);
+  }
 }
 
 .eucatur-warning .eucatur-mark {

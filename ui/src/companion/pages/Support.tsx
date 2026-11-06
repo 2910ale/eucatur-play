@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { call } from '../bridge'
 import { openSupportPage } from '../useHostStatus'
-import { Button, Group, Note, Panel, Row } from '../room/parts'
+import { Button, Group, Note, Panel, Row, Switch } from '../room/parts'
 import { GLOW, useScreenAt } from '../room/screen'
 import type { PageProps } from './page'
 
@@ -11,7 +11,7 @@ import type { PageProps } from './page'
  * and gives the credits: Eucatur Play is a modified WestPlay (GPL-3.0), whose maker can be supported too. On the
  * room's screen, Home.
  */
-export function Support({ cw }: PageProps) {
+export function Support({ cw, settings }: PageProps) {
   const w = cw.support
   useScreenAt('home', GLOW.home, null)
   const [install, setInstall] = useState<'idle' | 'started' | string>('idle')
@@ -43,6 +43,7 @@ export function Support({ cw }: PageProps) {
           onClick={runInstaller}
         />
       </Group>
+      <AvisosNoJogo settings={settings} />
       {install === 'started' && (
         <Note tone="calm">O Instalador Eucatur abriu. Na primeira vez ele pede o código do painel (Meu caminhão).</Note>
       )}
@@ -59,5 +60,45 @@ export function Support({ cw }: PageProps) {
       </Group>
       <Note tone="calm">{w.note}</Note>
     </Panel>
+  )
+}
+
+/**
+ * Eucatur Play (nov/2026): the Eucatur warnings in the game, each place on or off. On the truck's screen they
+ * show over the other apps; over the game they show at the top of the screen (urgent ones blink and beep).
+ */
+function AvisosNoJogo({ settings }: { settings: PageProps['settings'] }) {
+  const current = settings.settings
+  const eucatur = current?.eucatur ?? { avisosTela: true, avisosPorCima: true }
+  const change = (next: Partial<typeof eucatur>) => {
+    if (current) void settings.update({ ...current, eucatur: { ...eucatur, ...next } })
+  }
+  return (
+    <Group title="Avisos da Eucatur no jogo" place={4}>
+      <Row
+        title="Na tela do caminhão"
+        detail="Por cima do Spotify, YouTube e outros apps (as urgentes piscam e apitam)."
+        accessory={
+          <Switch
+            on={eucatur.avisosTela}
+            disabled={!current}
+            label="Avisos na tela do caminhão"
+            change={(on) => change({ avisosTela: on })}
+          />
+        }
+      />
+      <Row
+        title="Por cima do jogo"
+        detail="No alto da tela, com o jogo em janela ou tela cheia sem bordas (em tela cheia exclusiva o Windows não deixa)."
+        accessory={
+          <Switch
+            on={eucatur.avisosPorCima}
+            disabled={!current}
+            label="Avisos por cima do jogo"
+            change={(on) => change({ avisosPorCima: on })}
+          />
+        }
+      />
+    </Group>
   )
 }
