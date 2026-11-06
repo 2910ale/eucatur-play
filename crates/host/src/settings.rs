@@ -473,6 +473,7 @@ mod tests {
                 equalizer: crate::speakers::Equalizer { bass: -3, mid: 1, treble: 2 },
                 custom: true,
             },
+            eucatur: EucaturSettings { avisos_tela: false, avisos_por_cima: true },
         };
         let json = to_json(&settings);
         assert!(json.contains("\"version\": 2"), "{json}");
@@ -500,6 +501,8 @@ mod tests {
         assert_eq!(partial.screen.truck_strip, TruckStrip::Auto);
         // And from before the GPU was: WestPlay picks it.
         assert_eq!(partial.graphics.gpu, None);
+        // Eucatur Play: from before the Eucatur warnings were settings, both on.
+        assert_eq!(partial.eucatur, EucaturSettings { avisos_tela: true, avisos_por_cima: true });
     }
 
     #[test]
