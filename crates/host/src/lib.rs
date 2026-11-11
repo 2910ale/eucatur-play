@@ -12,6 +12,7 @@ mod capture;
 mod cursor;
 pub mod customize;
 pub mod elevate;
+pub mod instancia;
 pub mod overlay;
 pub mod fitted;
 mod game_settings;

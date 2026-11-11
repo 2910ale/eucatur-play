@@ -199,9 +199,25 @@ fn main() {
         std::thread::sleep(std::time::Duration::from_millis(250));
         instance = westplay_host::Instance::claim();
     }
+    // Eucatur Play (nov/2026): opened again — the running one shows its window; stuck, it's ended and this one
+    // starts in its place (westplay_host::instancia).
+    if instance.is_none() && !by_task {
+        if westplay_host::instancia::ask_to_show() {
+            return;
+        }
+        if westplay_host::instancia::end_others() > 0 {
+            for _ in 0..20 {
+                std::thread::sleep(std::time::Duration::from_millis(250));
+                instance = westplay_host::Instance::claim();
+                if instance.is_some() {
+                    break;
+                }
+            }
+        }
+    }
     let Some(_instance) = instance else {
         if !by_task {
-            westplay_host::tell_already_running();
+            westplay_host::instancia::tell_cant_show();
         }
         return;
     };
@@ -289,12 +305,29 @@ fn main() {
             app.manage(std::sync::Mutex::new(host));
             update::watch(app.handle());
             overlay::make(app.handle());
+            // Opened again: show this one's window.
+            let showing = app.handle().clone();
+            westplay_host::instancia::listen(move || {
+                if let Some(window) = showing.get_webview_window("main") {
+                    let _ = window.unminimize();
+                    let _ = window.show();
+                    let _ = window.set_focus();
+                }
+            });
             Ok(())
         })
         .build(tauri::generate_context!())
         .expect("failed to build the WestPlay app");
 
     app.run(|app, event| {
+        // Eucatur Play (nov/2026): the main window closed is Eucatur Play closed. The window of warnings over the
+        // game (overlay.rs) stays made, hidden — it kept the app running, invisible, after the player closed it,
+        // and then it wouldn't open again until the PC restarted.
+        if let RunEvent::WindowEvent { label, event: tauri::WindowEvent::Destroyed, .. } = &event {
+            if label == "main" {
+                app.exit(0);
+            }
+        }
         if let RunEvent::Exit = event {
             stop_host(app);
         }
