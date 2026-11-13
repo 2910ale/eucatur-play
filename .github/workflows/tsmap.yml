@@ -1,0 +1,18 @@
+name: ts-map Eucatur
+on:
+  push:
+    branches: [tsmap-eucatur]
+  workflow_dispatch:
+jobs:
+  build:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+      - uses: microsoft/setup-msbuild@v2
+      - uses: nuget/setup-nuget@v2
+      - run: nuget restore TsMap.sln
+      - run: msbuild TsMap.sln /p:Configuration=Release /m
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tsmap-eucatur-v7
+          path: TsMap.Canvas/bin/Release/

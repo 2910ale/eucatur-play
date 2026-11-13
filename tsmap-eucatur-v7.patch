@@ -1,0 +1,1078 @@
+diff --git a/TsMap.Canvas/TsMapCanvas.cs b/TsMap.Canvas/TsMapCanvas.cs
+index 3f02e0f..e38a834 100644
+--- a/TsMap.Canvas/TsMapCanvas.cs
++++ b/TsMap.Canvas/TsMapCanvas.cs
+@@ -56,6 +56,28 @@ namespace TsMap.Canvas
+             else _startPoint = new PointF(-1000, -4000);
+             _renderer = new TsMapRenderer(_mapper);
+ 
++            // Eucatur: exporta navegacao + pontos (radar/lombada) pro Painel Eucatur.
++            var navMenu = new ToolStripMenuItem("Exportar navegação e radares (Eucatur)");
++            navMenu.Click += (s, e) =>
++            {
++                using (var dlg = new FolderBrowserDialog { Description = "Escolha a pasta onde salvar os arquivos da Eucatur" })
++                {
++                    if (dlg.ShowDialog() != DialogResult.OK) return;
++                    Cursor = Cursors.WaitCursor;
++                    try
++                    {
++                        var resumo = TsMap.Eucatur.NavExporter.Export(_mapper, dlg.SelectedPath);
++                        MessageBox.Show(resumo + "\n\nArquivos salvos em: " + dlg.SelectedPath, "Eucatur", MessageBoxButtons.OK, MessageBoxIcon.Information);
++                    }
++                    catch (Exception ex)
++                    {
++                        MessageBox.Show("Erro ao exportar: " + ex, "Eucatur", MessageBoxButtons.OK, MessageBoxIcon.Error);
++                    }
++                    finally { Cursor = Cursors.Default; }
++                }
++            };
++            mainToolStripMenuItem.DropDownItems.Insert(1, navMenu);
++
+             // Panning around
+             MapPanel.MouseDown += (s, e) =>
+             {
+diff --git a/TsMap/Eucatur/NavExporter.cs b/TsMap/Eucatur/NavExporter.cs
+new file mode 100644
+index 0000000..3608ebe
+--- /dev/null
++++ b/TsMap/Eucatur/NavExporter.cs
+@@ -0,0 +1,317 @@
++using System;
++using System.Collections.Generic;
++using System.Drawing;
++using System.Globalization;
++using System.IO;
++using System.Linq;
++using System.Text;
++using TsMap.Common;
++using TsMap.Helpers.Logger;
++using TsMap.TsItem;
++
++namespace TsMap.Eucatur
++{
++    /// <summary>
++    /// Eucatur: exporta o grafo de navegacao (navegacao.json) e os pontos de interesse
++    /// (pontos.json + pontos-resumo.txt) do mapa carregado (jogo + mods, ex.: RBR).
++    ///   nodes:     [[x, z, itemTras, itemFrente], ...]
++    ///   edges:     [[deNo, paraNo, item, comprimento, tipo(0 estrada / 1 cruzamento), [x1,z1,...]], ...]
++    ///   companies: [[empresa, cidade, x, z, itemDoPrefab, [nosDeEntrada]], ...]
++    ///   cities:    [[token, nome, x, z], ...]
++    /// </summary>
++    public static class NavExporter
++    {
++        private static readonly CultureInfo Inv = CultureInfo.InvariantCulture;
++
++        public static string Export(TsMapper m, string dir)
++        {
++            var nodeIdx = new Dictionary<ulong, int>();
++            var nodes = new List<TsNode>();
++            var itemIdx = new Dictionary<ulong, int>();
++            var edges = new List<string>();
++            int roadEdges = 0, prefabEdges = 0, prefabsSemCurva = 0, prefabsSemLigacao = 0;
++
++            Func<ulong, int> NodeIndex = uid =>
++            {
++                int i;
++                if (nodeIdx.TryGetValue(uid, out i)) return i;
++                var n = m.GetNodeByUid(uid);
++                if (n == null) return -1;
++                i = nodes.Count;
++                nodes.Add(n);
++                nodeIdx[uid] = i;
++                return i;
++            };
++
++            foreach (var r in m.Roads) if (!itemIdx.ContainsKey(r.Uid)) itemIdx[r.Uid] = itemIdx.Count;
++            foreach (var p in m.Prefabs) if (!itemIdx.ContainsKey(p.Uid)) itemIdx[p.Uid] = itemIdx.Count;
++
++            foreach (var road in m.Roads)
++            {
++                try
++                {
++                    var s = road.GetStartNode();
++                    var e = road.GetEndNode();
++                    if (s == null || e == null) continue;
++                    var si = NodeIndex(s.Uid);
++                    var ei = NodeIndex(e.Uid);
++                    if (si < 0 || ei < 0 || si == ei) continue;
++                    var pts = RoadPoints(s, e);
++                    var len = PolyLength(pts);
++                    var lanesR = road.RoadLook?.LanesRight?.Count ?? 0;
++                    var lanesL = road.RoadLook?.LanesLeft?.Count ?? 0;
++                    var both = lanesR == 0 && lanesL == 0;
++                    var item = itemIdx[road.Uid];
++                    if (lanesR > 0 || both) { edges.Add(EdgeJson(si, ei, item, len, 0, pts)); roadEdges++; }
++                    if (lanesL > 0 || both)
++                    {
++                        var rev = new List<PointF>(pts);
++                        rev.Reverse();
++                        edges.Add(EdgeJson(ei, si, item, len, 0, rev));
++                        roadEdges++;
++                    }
++                }
++                catch (Exception ex) { Logger.Instance.Warning($"[navegacao] estrada 0x{road.Uid:X} ignorada: {ex.Message}"); }
++            }
++
++            foreach (var p in m.Prefabs)
++            {
++                try
++                {
++                    var pf = p.Prefab;
++                    if (pf?.PrefabNodes == null || pf.NavCurves == null || pf.NavCurves.Count == 0 || p.Nodes == null) { prefabsSemCurva++; continue; }
++                    var n = pf.PrefabNodes.Count;
++                    if (n == 0 || p.Nodes.Count < n || p.Origin >= n) continue;
++                    var originNode = m.GetNodeByUid(p.Nodes[0]);
++                    if (originNode == null) continue;
++                    var o = pf.PrefabNodes[p.Origin];
++                    var rot = (float)(originNode.Rotation - Math.PI - Math.Atan2(o.RotZ, o.RotX) + Math.PI / 2);
++                    var startX = originNode.X - o.X;
++                    var startZ = originNode.Z - o.Z;
++                    var item = itemIdx[p.Uid];
++
++                    var best = new Dictionary<long, Tuple<float, List<int>>>();
++                    for (var i = 0; i < n; i++)
++                        foreach (var lane in pf.PrefabNodes[i].InputLanes)
++                        {
++                            if (lane < 0 || lane >= pf.NavCurves.Count) continue;
++                            Walk(pf, i, new List<int> { lane }, pf.NavCurves[lane].Length, best);
++                        }
++                    if (best.Count == 0) prefabsSemLigacao++;
++
++                    foreach (var kv in best)
++                    {
++                        var i = (int)(kv.Key >> 16);
++                        var j = (int)(kv.Key & 0xFFFF);
++                        var fi = NodeIndex(p.Nodes[((i - p.Origin) % n + n) % n]);
++                        var ti = NodeIndex(p.Nodes[((j - p.Origin) % n + n) % n]);
++                        if (fi < 0 || ti < 0) continue;
++                        var pts = new List<PointF>();
++                        foreach (var ci in kv.Value.Item2)
++                            foreach (var lp in CurvePoints(pf.NavCurves[ci]))
++                            {
++                                var w = RenderHelper.RotatePoint(startX + lp.X, startZ + lp.Y, rot, originNode.X, originNode.Z);
++                                if (pts.Count == 0 || Dist(pts[pts.Count - 1], w) > 0.5f) pts.Add(w);
++                            }
++                        if (pts.Count < 2) continue;
++                        edges.Add(EdgeJson(fi, ti, item, Math.Max(kv.Value.Item1, PolyLength(pts)), 1, pts));
++                        prefabEdges++;
++                    }
++                }
++                catch (Exception ex) { Logger.Instance.Warning($"[navegacao] prefab 0x{p.Uid:X} ignorado: {ex.Message}"); }
++            }
++
++            // Empresas (antes de escrever os nos: os nos de entrada delas entram na lista)
++            var companyJson = new List<string>();
++            var prefabByUid = new Dictionary<ulong, TsPrefabItem>();
++            foreach (var p in m.Prefabs) prefabByUid[p.Uid] = p;
++            foreach (var c in m.MapItems.OfType<TsCompanyItem>())
++            {
++                if (c.Position.IsEmpty) continue;
++                var entry = new List<int>();
++                TsPrefabItem cp;
++                if (prefabByUid.TryGetValue(c.PrefabUid, out cp) && cp.Nodes != null)
++                    foreach (var nu in cp.Nodes) { var ni = NodeIndex(nu); if (ni >= 0) entry.Add(ni); }
++                var sbc = new StringBuilder();
++                sbc.Append("[\"").Append(ScsToken.TokenToString(c.CompanyToken)).Append("\",\"")
++                   .Append(ScsToken.TokenToString(c.CityToken)).Append("\",")
++                   .Append(F(c.Position.X)).Append(',').Append(F(c.Position.Y)).Append(',')
++                   .Append(ItemOf(itemIdx, c.PrefabUid).ToString(Inv)).Append(",[")
++                   .Append(string.Join(",", entry.Select(x => x.ToString(Inv)))).Append("]]");
++                companyJson.Add(sbc.ToString());
++            }
++
++            Directory.CreateDirectory(dir);
++            var path = Path.Combine(dir, "navegacao.json");
++            var cityCount = 0;
++            using (var w = new StreamWriter(path, false, new UTF8Encoding(false), 1 << 20))
++            {
++                w.Write("{\"versao\":2,\"gerado\":\"");
++                w.Write(DateTime.UtcNow.ToString("o", Inv));
++                w.Write("\",\"items\":");
++                w.Write(itemIdx.Count.ToString(Inv));
++                w.Write(",\"nodes\":[");
++                for (var i = 0; i < nodes.Count; i++)
++                {
++                    var nd = nodes[i];
++                    if (i > 0) w.Write(',');
++                    w.Write('['); w.Write(F(nd.X)); w.Write(','); w.Write(F(nd.Z)); w.Write(',');
++                    w.Write(ItemOf(itemIdx, nd.BackwardItemUid).ToString(Inv)); w.Write(',');
++                    w.Write(ItemOf(itemIdx, nd.ForwardItemUid).ToString(Inv)); w.Write(']');
++                }
++                w.Write("],\"edges\":[");
++                for (var i = 0; i < edges.Count; i++) { if (i > 0) w.Write(','); w.Write(edges[i]); }
++                w.Write("],\"companies\":[");
++                w.Write(string.Join(",", companyJson));
++                w.Write("],\"cities\":[");
++                var first = true;
++                foreach (var city in m.Cities)
++                {
++                    if (city.City == null) continue;
++                    if (!first) w.Write(',');
++                    first = false;
++                    w.Write("[\""); w.Write(ScsToken.TokenToString(city.City.Token)); w.Write("\",\"");
++                    w.Write((city.City.Name ?? "").Replace("\\", "\\\\").Replace("\"", "\\\""));
++                    w.Write("\","); w.Write(F(city.X)); w.Write(','); w.Write(F(city.Z)); w.Write(']');
++                    cityCount++;
++                }
++                w.Write("]}");
++            }
++
++            var pontos = 0;
++            try { pontos = Pontos.Escrever(m, dir); }
++            catch (Exception ex) { Logger.Instance.Warning($"[navegacao] pontos falhou: {ex.Message}"); }
++
++            var size = new FileInfo(path).Length / (1024.0 * 1024.0);
++            var resumo = $"Navegacao exportada: {nodes.Count} nos, {roadEdges} trechos de estrada, {prefabEdges} conversoes em cruzamentos, " +
++                         $"{companyJson.Count} empresas, {cityCount} cidades ({size:0.0} MB). Prefabs sem curvas: {prefabsSemCurva}, sem ligacao: {prefabsSemLigacao}.\n" +
++                         $"Pontos parecidos com radar/lombada/etc.: {pontos} (veja pontos-resumo.txt).";
++            Logger.Instance.Info(resumo);
++            return resumo;
++        }
++
++        private static void Walk(TsPrefab pf, int startNode, List<int> path, float len, Dictionary<long, Tuple<float, List<int>>> best)
++        {
++            var last = path[path.Count - 1];
++            var curve = pf.NavCurves[last];
++            if (IsOutputLane(pf, last) || curve.NextLines.Count == 0 || path.Count > 24)
++            {
++                var end = EndNodeOf(pf, last, curve);
++                if (end < 0) return;
++                var key = ((long)startNode << 16) | (uint)end;
++                Tuple<float, List<int>> cur;
++                if (!best.TryGetValue(key, out cur) || len < cur.Item1) best[key] = Tuple.Create(len, new List<int>(path));
++                return;
++            }
++            foreach (var next in curve.NextLines)
++            {
++                if (next < 0 || next >= pf.NavCurves.Count || path.Contains(next)) continue;
++                path.Add(next);
++                Walk(pf, startNode, path, len + pf.NavCurves[next].Length, best);
++                path.RemoveAt(path.Count - 1);
++            }
++        }
++
++        private static bool IsOutputLane(TsPrefab pf, int curveIndex)
++        {
++            for (var j = 0; j < pf.PrefabNodes.Count; j++)
++                if (pf.PrefabNodes[j].OutputLanes.Contains(curveIndex)) return true;
++            return false;
++        }
++
++        private static int EndNodeOf(TsPrefab pf, int curveIndex, TsPrefabCurve curve)
++        {
++            for (var j = 0; j < pf.PrefabNodes.Count; j++)
++                if (pf.PrefabNodes[j].OutputLanes.Contains(curveIndex)) return j;
++            var bestJ = -1;
++            var bestD = 2f;
++            for (var j = 0; j < pf.PrefabNodes.Count; j++)
++            {
++                var d = (float)Math.Sqrt(Math.Pow(pf.PrefabNodes[j].X - curve.EndX, 2) + Math.Pow(pf.PrefabNodes[j].Z - curve.EndZ, 2));
++                if (d < bestD) { bestD = d; bestJ = j; }
++            }
++            return bestJ;
++        }
++
++        private static List<PointF> CurvePoints(TsPrefabCurve c)
++        {
++            var dx = c.EndX - c.StartX;
++            var dz = c.EndZ - c.StartZ;
++            var chord = (float)Math.Sqrt(dx * dx + dz * dz);
++            var pts = new List<PointF>();
++            if (chord < 0.01f) { pts.Add(new PointF(c.StartX, c.StartZ)); return pts; }
++            var t0 = Forward(c.StartRotW, c.StartRotX, c.StartRotY, c.StartRotZ, dx, dz);
++            var t1 = Forward(c.EndRotW, c.EndRotX, c.EndRotY, c.EndRotZ, dx, dz);
++            var steps = Math.Max(2, Math.Min(10, (int)(chord / 8f) + 2));
++            for (var i = 0; i <= steps; i++)
++            {
++                var s = i / (float)steps;
++                pts.Add(new PointF((float)TsRoadLook.Hermite(s, c.StartX, c.EndX, t0.X * chord, t1.X * chord),
++                                   (float)TsRoadLook.Hermite(s, c.StartZ, c.EndZ, t0.Y * chord, t1.Y * chord)));
++            }
++            return pts;
++        }
++
++        private static PointF Forward(float w, float x, float y, float z, float chordX, float chordZ)
++        {
++            double vx = 0, vy = 0, vz = -1;
++            double tx = 2 * (y * vz - z * vy), ty = 2 * (z * vx - x * vz), tz = 2 * (x * vy - y * vx);
++            double rx = vx + w * tx + (y * tz - z * ty);
++            double rz = vz + w * tz + (x * ty - y * tx);
++            var len = Math.Sqrt(rx * rx + rz * rz);
++            if (len < 1e-6) return new PointF(chordX, chordZ);
++            rx /= len; rz /= len;
++            if (rx * chordX + rz * chordZ < 0) { rx = -rx; rz = -rz; }
++            return new PointF((float)rx, (float)rz);
++        }
++
++        private static List<PointF> RoadPoints(TsNode s, TsNode e)
++        {
++            var sx = s.X; var sz = s.Z; var ex = e.X; var ez = e.Z;
++            var radius = Math.Sqrt(Math.Pow(sx - ex, 2) + Math.Pow(sz - ez, 2));
++            var tanSx = Math.Cos(-(Math.PI * 0.5f - s.Rotation)) * radius;
++            var tanEx = Math.Cos(-(Math.PI * 0.5f - e.Rotation)) * radius;
++            var tanSz = Math.Sin(-(Math.PI * 0.5f - s.Rotation)) * radius;
++            var tanEz = Math.Sin(-(Math.PI * 0.5f - e.Rotation)) * radius;
++            var steps = Math.Max(2, Math.Min(16, (int)(radius / 20) + 2));
++            var pts = new List<PointF>();
++            for (var i = 0; i <= steps; i++)
++            {
++                var t = i / (float)steps;
++                pts.Add(new PointF((float)TsRoadLook.Hermite(t, sx, ex, tanSx, tanEx), (float)TsRoadLook.Hermite(t, sz, ez, tanSz, tanEz)));
++            }
++            return pts;
++        }
++
++        private static float Dist(PointF a, PointF b) { return (float)Math.Sqrt((a.X - b.X) * (a.X - b.X) + (a.Y - b.Y) * (a.Y - b.Y)); }
++
++        private static float PolyLength(List<PointF> pts)
++        {
++            float l = 0;
++            for (var i = 1; i < pts.Count; i++) l += Dist(pts[i - 1], pts[i]);
++            return l;
++        }
++
++        private static int ItemOf(Dictionary<ulong, int> itemIdx, ulong uid)
++        {
++            int i;
++            return uid != 0 && itemIdx.TryGetValue(uid, out i) ? i : -1;
++        }
++
++        private static string F(float v) { return Math.Round(v, 1).ToString("0.#", Inv); }
++
++        private static string EdgeJson(int from, int to, int item, float len, int kind, List<PointF> pts)
++        {
++            var sb = new StringBuilder(32 + pts.Count * 16);
++            sb.Append('[').Append(from.ToString(Inv)).Append(',').Append(to.ToString(Inv)).Append(',')
++              .Append(item.ToString(Inv)).Append(',').Append(F(len)).Append(',').Append(kind).Append(",[");
++            for (var i = 0; i < pts.Count; i++)
++            {
++                if (i > 0) sb.Append(',');
++                sb.Append(F(pts[i].X)).Append(',').Append(F(pts[i].Y));
++            }
++            sb.Append("]]");
++            return sb.ToString();
++        }
++    }
++}
+diff --git a/TsMap/Eucatur/Pontos.cs b/TsMap/Eucatur/Pontos.cs
+new file mode 100644
+index 0000000..8f559dc
+--- /dev/null
++++ b/TsMap/Eucatur/Pontos.cs
+@@ -0,0 +1,124 @@
++using System;
++using System.Collections.Generic;
++using System.Globalization;
++using System.IO;
++using System.Linq;
++using System.Text;
++using TsMap.Common;
++using TsMap.Helpers.Logger;
++
++namespace TsMap.Eucatur
++{
++    /// <summary>
++    /// Eucatur: guarda, durante a leitura do mapa, os "pontos de interesse" (regras de transito,
++    /// gatilhos, placas e objetos) com o nome interno de cada um. Na exportacao gera:
++    ///  - pontos-resumo.txt: quantos de cada nome existem (pra descobrir como o mapa chama radar/lombada);
++    ///  - pontos.json: posicoes so dos nomes que parecem radar, lombada, policia, pedagio etc.
++    /// </summary>
++    public static class Pontos
++    {
++        private struct P { public byte Tipo; public ulong Token; public ulong NodeUid; }
++        private static readonly string[] Tipos = { "regra", "gatilho", "placa", "objeto" };
++        private static readonly List<P> Lista = new List<P>();
++        private static readonly object Trava = new object();
++
++        private static readonly string[] Palavras =
++        {
++            "radar", "camer", "speed", "lomb", "bump", "quebra", "ondul", "redut", "tachao", "tacha",
++            "polic", "prf", "fiscal", "pedag", "toll", "balanc", "weigh", "fotos", "control", "semaf", "farol",
++            "offence", "offense", "fine"
++        };
++
++        public static void Add(string tipo, ulong token, ulong nodeUid)
++        {
++            if (token == 0 || nodeUid == 0) return;
++            var t = (byte)Array.IndexOf(Tipos, tipo);
++            lock (Trava) Lista.Add(new P { Tipo = t, Token = token, NodeUid = nodeUid });
++        }
++
++        private static bool Interessa(string nome)
++        {
++            var n = nome.ToLowerInvariant();
++            return Palavras.Any(p => n.Contains(p));
++        }
++
++        public static int Escrever(TsMapper m, string dir)
++        {
++            var inv = CultureInfo.InvariantCulture;
++            var contagem = new Dictionary<string, int>();
++            var posicoes = new Dictionary<string, List<float>>();
++            var total = 0;
++            List<P> copia;
++            lock (Trava) copia = new List<P>(Lista);
++            foreach (var p in copia)
++            {
++                var nome = ScsToken.TokenToString(p.Token);
++                var chave = Tipos[p.Tipo] + "|" + nome;
++                int c;
++                contagem.TryGetValue(chave, out c);
++                contagem[chave] = c + 1;
++                if (!Interessa(nome)) continue;
++                var n = m.GetNodeByUid(p.NodeUid);
++                if (n == null) continue;
++                List<float> l;
++                if (!posicoes.TryGetValue(chave, out l)) posicoes[chave] = l = new List<float>();
++                l.Add(n.X); l.Add(n.Z);
++                total++;
++            }
++
++            // Eucatur v7: icones do proprio mapa do jogo (posto, oficina, estacionamento/descanso,
++            // balanca, pedagio, garagem) -> o GPS mostra postos e paradas no caminho.
++            var overlaysQueInteressam = new HashSet<string> { "gas_ico", "service_ico", "parking_ico", "weigh_station_ico", "toll_ico", "garage_large_ico" };
++            try
++            {
++                foreach (var ov in m.OverlayManager.GetOverlays())
++                {
++                    if (ov == null || ov.OverlayName == null || !overlaysQueInteressam.Contains(ov.OverlayName)) continue;
++                    var chave = "overlay|" + ov.OverlayName;
++                    int c;
++                    contagem.TryGetValue(chave, out c);
++                    contagem[chave] = c + 1;
++                    List<float> l;
++                    if (!posicoes.TryGetValue(chave, out l)) posicoes[chave] = l = new List<float>();
++                    l.Add(ov.Position.X); l.Add(ov.Position.Y);
++                    total++;
++                }
++            }
++            catch (Exception ex) { Logger.Instance.Warning($"[pontos] icones do mapa falharam: {ex.Message}"); }
++
++            // Eucatur v7: identificacao do mapa (o painel usa pra mostrar o nome e saber de onde veio).
++            try
++            {
++                var mods = string.Join(",", m.ModsCarregados().Select(x => "\"" + x.Replace("\\", "/").Replace("\"", "'") + "\""));
++                File.WriteAllText(Path.Combine(dir, "mapa-info.json"),
++                    "{\"gerado\":\"" + DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ssZ", inv) + "\",\"mods\":[" + mods + "],\"versaoExportador\":7}",
++                    new UTF8Encoding(false));
++            }
++            catch (Exception ex) { Logger.Instance.Warning($"[pontos] mapa-info falhou: {ex.Message}"); }
++
++            var sb = new StringBuilder();
++            sb.AppendLine("tipo\tnome\tquantidade\tparece_radar_lombada_etc");
++            foreach (var kv in contagem.OrderBy(k => k.Key.Split('|')[0]).ThenByDescending(k => k.Value))
++            {
++                var partes = kv.Key.Split('|');
++                sb.Append(partes[0]).Append('\t').Append(partes[1]).Append('\t').Append(kv.Value)
++                  .Append('\t').AppendLine(Interessa(partes[1]) || partes[0] == "overlay" ? "SIM" : "");
++            }
++            File.WriteAllText(Path.Combine(dir, "pontos-resumo.txt"), sb.ToString(), new UTF8Encoding(false));
++
++            var js = new StringBuilder("{");
++            var primeiro = true;
++            foreach (var kv in posicoes.OrderByDescending(k => k.Value.Count))
++            {
++                if (!primeiro) js.Append(',');
++                primeiro = false;
++                js.Append('"').Append(kv.Key.Replace("\\", "\\\\").Replace("\"", "\\\"")).Append("\":[");
++                js.Append(string.Join(",", kv.Value.Select(v => Math.Round(v, 1).ToString("0.#", inv))));
++                js.Append(']');
++            }
++            js.Append('}');
++            File.WriteAllText(Path.Combine(dir, "pontos.json"), js.ToString(), new UTF8Encoding(false));
++            return total;
++        }
++    }
++}
+diff --git a/TsMap/FileSystem/UberDirectory.cs b/TsMap/FileSystem/UberDirectory.cs
+index 3b1acfb..30114f5 100644
+--- a/TsMap/FileSystem/UberDirectory.cs
++++ b/TsMap/FileSystem/UberDirectory.cs
+@@ -1,4 +1,4 @@
+-﻿using System.Collections.Generic;
++using System.Collections.Generic;
+ using System.IO;
+ using System.Linq;
+ 
+@@ -83,7 +83,7 @@ namespace TsMap.FileSystem
+             }
+             else
+             {
+-                return _subFilesNames.Where(f => extensionFilter.Contains(Path.GetExtension(f)))
++                return _subFilesNames.Where(f => extensionFilter.Contains(TsMap.Helpers.SafePath.GetExtension(f)))
+                                      .Select(f => $"{path}{f}")
+                                      .ToList();
+             }
+diff --git a/TsMap/FileSystem/Zip/ZipArchiveFile.cs b/TsMap/FileSystem/Zip/ZipArchiveFile.cs
+index 2eef553..c21f1ed 100644
+--- a/TsMap/FileSystem/Zip/ZipArchiveFile.cs
++++ b/TsMap/FileSystem/Zip/ZipArchiveFile.cs
+@@ -1,4 +1,4 @@
+-﻿using System.IO;
++using System.IO;
+ using System.Linq;
+ using TsMap.Helpers;
+ using TsMap.Helpers.Logger;
+@@ -94,7 +94,7 @@ namespace TsMap.FileSystem.Zip
+                     fileOffset = prevOffset;
+                 }
+ 
+-                var parentDirPath = Path.GetDirectoryName(name).Replace('\\', '/');
++                var parentDirPath = TsMap.Helpers.SafePath.GetDirectoryName(name).Replace('\\', '/');
+                 var parentDirHash = CityHash.CityHash64(parentDirPath);
+ 
+                 UberDirectory parentDir;
+@@ -122,7 +122,7 @@ namespace TsMap.FileSystem.Zip
+                         dir.AddNewEntry(entry);
+                         UberFileSystem.Instance.Directories.Add(entry.GetHash(), dir);
+                     }
+-                    parentDir.AddSubDirName(Path.GetFileName(name));
++                    parentDir.AddSubDirName(TsMap.Helpers.SafePath.GetFileName(name));
+                 }
+                 else
+                 {
+@@ -132,7 +132,7 @@ namespace TsMap.FileSystem.Zip
+                     }
+                     else
+                     {
+-                        parentDir.AddSubFileName(Path.GetFileName(name));
++                        parentDir.AddSubFileName(TsMap.Helpers.SafePath.GetFileName(name));
+                         UberFileSystem.Instance.Files.Add(entry.GetHash(), new UberFile(entry));
+                     }
+                 }
+diff --git a/TsMap/Helpers/Logger/Logger.cs b/TsMap/Helpers/Logger/Logger.cs
+index 80da97d..1d19a77 100644
+--- a/TsMap/Helpers/Logger/Logger.cs
++++ b/TsMap/Helpers/Logger/Logger.cs
+@@ -1,4 +1,4 @@
+-﻿using System;
++using System;
+ using System.Collections.Concurrent;
+ using System.IO;
+ using System.Runtime.CompilerServices;
+@@ -25,7 +25,15 @@ namespace TsMap.Helpers.Logger
+             var logDirPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "ts-map");
+             if (!Directory.Exists(logDirPath)) Directory.CreateDirectory(logDirPath);
+ 
+-            _fs = new FileStream(Path.Combine(logDirPath, "TsMap.log"), FileMode.Create);
++            // Eucatur: se outra janela do ts-map estiver com o log aberto, usa outro arquivo em vez de travar.
++            try
++            {
++                _fs = new FileStream(Path.Combine(logDirPath, "TsMap.log"), FileMode.Create, FileAccess.Write, FileShare.ReadWrite);
++            }
++            catch (IOException)
++            {
++                _fs = new FileStream(Path.Combine(logDirPath, $"TsMap-{System.Diagnostics.Process.GetCurrentProcess().Id}.log"), FileMode.Create, FileAccess.Write, FileShare.ReadWrite);
++            }
+             _sw = new StreamWriter(_fs);
+             Task.Run(() =>
+             {
+diff --git a/TsMap/Helpers/PathHelper.cs b/TsMap/Helpers/PathHelper.cs
+index ec9f30c..17a2030 100644
+--- a/TsMap/Helpers/PathHelper.cs
++++ b/TsMap/Helpers/PathHelper.cs
+@@ -1,4 +1,4 @@
+-﻿using System.IO;
++using System.IO;
+ 
+ namespace TsMap.Helpers
+ {
+@@ -12,7 +12,7 @@ namespace TsMap.Helpers
+         /// <returns>The combined path</returns>
+         internal static string CombinePath(string firstPath, string secondPath)
+         {
+-            var fullPath = Path.Combine(firstPath, secondPath);
++            var fullPath = SafePath.Combine(firstPath, secondPath);
+ 
+             return EnsureLocalPath(fullPath.Replace('\\', '/'));
+         }
+@@ -65,7 +65,7 @@ namespace TsMap.Helpers
+         /// <returns></returns>
+         internal static string GetFileNameFromPath(string filePath)
+         {
+-            return Path.GetFileName(filePath);
++            return SafePath.GetFileName(filePath);
+         }
+ 
+         /// <summary>
+@@ -76,7 +76,7 @@ namespace TsMap.Helpers
+         /// <returns></returns>
+         internal static string GetFileNameWithoutExtensionFromPath(string filePath)
+         {
+-            return Path.GetFileNameWithoutExtension(filePath);
++            return SafePath.GetFileNameWithoutExtension(filePath);
+         }
+     }
+ }
+diff --git a/TsMap/Helpers/SafePath.cs b/TsMap/Helpers/SafePath.cs
+new file mode 100644
+index 0000000..cac72ca
+--- /dev/null
++++ b/TsMap/Helpers/SafePath.cs
+@@ -0,0 +1,33 @@
++namespace TsMap.Helpers
++{
++    /// <summary>Eucatur: manipulacao de caminho sem validacao (mods tem nomes que o Windows recusa).</summary>
++    internal static class SafePath
++    {
++        private static int LastSep(string p) { return System.Math.Max(p.LastIndexOf('/'), p.LastIndexOf('\\')); }
++        public static string GetFileName(string p) { return p == null ? null : p.Substring(LastSep(p) + 1); }
++        public static string GetExtension(string p)
++        {
++            if (p == null) return null;
++            var n = GetFileName(p); var d = n.LastIndexOf('.');
++            return d >= 0 ? n.Substring(d) : "";
++        }
++        public static string GetFileNameWithoutExtension(string p)
++        {
++            if (p == null) return null;
++            var n = GetFileName(p); var d = n.LastIndexOf('.');
++            return d >= 0 ? n.Substring(0, d) : n;
++        }
++        public static string GetDirectoryName(string p)
++        {
++            if (p == null) return null;
++            var i = LastSep(p); return i >= 0 ? p.Substring(0, i) : "";
++        }
++        public static string Combine(string a, string b)
++        {
++            if (string.IsNullOrEmpty(a)) return b ?? "";
++            if (string.IsNullOrEmpty(b)) return a;
++            if (b.StartsWith("/") || b.StartsWith("\\")) return b;
++            return a.EndsWith("/") || a.EndsWith("\\") ? a + b : a + "/" + b;
++        }
++    }
++}
+diff --git a/TsMap/LocalizationManager.cs b/TsMap/LocalizationManager.cs
+index d4c3535..7da36b3 100644
+--- a/TsMap/LocalizationManager.cs
++++ b/TsMap/LocalizationManager.cs
+@@ -1,4 +1,5 @@
+-﻿using System.Collections.Generic;
++using System;
++using System.Collections.Generic;
+ using System.Diagnostics;
+ using System.Linq;
+ using System.Text;
+@@ -28,10 +29,12 @@ namespace TsMap.Helpers
+             foreach (var localeDirDirectoryName in localeDir.GetSubDirectoryNames())
+             {
+                 var localeDirDirectory = UberFileSystem.Instance.GetDirectory($"locale/{localeDirDirectoryName}");
++                if (localeDirDirectory == null) continue; // Eucatur: pasta de idioma quebrada em mod
+ 
+                 foreach (var localeFilePath in localeDirDirectory.GetFilesByExtension($"locale/{localeDirDirectoryName}", ".sui", ".sii"))
+                 {
+-                    ParseLocaleFile(localeFilePath, localeDirDirectoryName);
++                    try { ParseLocaleFile(localeFilePath, localeDirDirectoryName); }
++                    catch (Exception ex) { Logger.Logger.Instance.Warning($"Arquivo de idioma ignorado '{localeFilePath}': {ex.Message}"); }
+                 }
+             }
+         }
+@@ -39,6 +42,7 @@ namespace TsMap.Helpers
+         private void ParseLocaleFile(string localeFilePath, string locale)
+         {
+             var localeFile = UberFileSystem.Instance.GetFile(localeFilePath);
++            if (localeFile == null || localeFile.Entry == null) return;
+             var entryContents = localeFile.Entry.Read();
+             var magic = MemoryHelper.ReadUInt32(entryContents, 0);
+             var fileContents = (magic == 21720627) ? MemoryHelper.Decrypt3Nk(entryContents) : Encoding.UTF8.GetString(entryContents);
+@@ -56,11 +60,11 @@ namespace TsMap.Helpers
+ 
+                 if (l.Contains("key[]"))
+                 {
+-                    key = l.Split('"')[1];
++                    var kp = l.Split('"'); if (kp.Length < 2) continue; key = kp[1];
+                 }
+                 else if (l.Contains("val[]"))
+                 {
+-                    var val = l.Split('"')[1];
++                    var vp = l.Split('"'); if (vp.Length < 2) continue; var val = vp[1];
+                     if (key != string.Empty && val != string.Empty)
+                     {
+                         AddLocaleValue(locale, key, val);
+diff --git a/TsMap/TsItem/TsCompanyItem.cs b/TsMap/TsItem/TsCompanyItem.cs
+index e7d80eb..e9243e0 100644
+--- a/TsMap/TsItem/TsCompanyItem.cs
++++ b/TsMap/TsItem/TsCompanyItem.cs
+@@ -1,4 +1,4 @@
+-﻿using System;
++using System;
+ using System.Collections.Generic;
+ using System.Drawing;
+ using System.IO;
+@@ -14,6 +14,10 @@ namespace TsMap.TsItem
+     {
+         private ulong _companyNameToken;
+         private ulong _prefabUid;
++        public ulong CompanyToken => _companyNameToken;
++        public ulong PrefabUid => _prefabUid;
++        public ulong CityToken { get; private set; }
++        public PointF Position { get; private set; }
+ 
+         public TsCompanyItem(TsSector sector, int startOffset) : base(sector, startOffset)
+         {
+@@ -101,6 +105,7 @@ namespace TsMap.TsItem
+             var fileOffset = startOffset + 0x34; // Set position at start of flags
+             DlcGuard = MemoryHelper.ReadUint8(Sector.Stream, fileOffset + 0x01);
+ 
++            CityToken = MemoryHelper.ReadUInt64(Sector.Stream, fileOffset + 0x05);
+             _prefabUid = MemoryHelper.ReadUInt64(Sector.Stream, fileOffset += 0x05 + 0x08); // 0x05(flags) + 0x08(linked_city_name)
+ 
+             _companyNameToken = MemoryHelper.ReadUInt64(Sector.Stream, fileOffset += 0x08); // 0x08(_prefabUid)
+@@ -158,6 +163,7 @@ namespace TsMap.TsItem
+                     originNode.X, originNode.Z);
+             }
+ 
++            Position = point;
+             if (!Sector.Mapper.OverlayManager.AddOverlay(ScsToken.TokenToString(_companyNameToken), OverlayType.Company,
+                     point.X, point.Y, "Company", DlcGuard, prefab.IsSecret))
+             {
+diff --git a/TsMap/TsItem/TsCutPlaneItem.cs b/TsMap/TsItem/TsCutPlaneItem.cs
+new file mode 120000
+index 0000000..7fa8d64
+--- /dev/null
++++ b/TsMap/TsItem/TsCutPlaneItem.cs
+@@ -0,0 +1 @@
++/home/claude/vendor/ts-map/TsMap/TsItem/TsCutplaneItem.cs
+\ No newline at end of file
+diff --git a/TsMap/TsItem/TsModelItem.cs b/TsMap/TsItem/TsModelItem.cs
+index 2cb78e3..2c9f847 100644
+--- a/TsMap/TsItem/TsModelItem.cs
++++ b/TsMap/TsItem/TsModelItem.cs
+@@ -1,4 +1,4 @@
+-﻿using System.IO;
++using System.IO;
+ using TsMap.Helpers;
+ using TsMap.Helpers.Logger;
+ 
+@@ -20,7 +20,9 @@ namespace TsMap.TsItem
+         public void TsModelItem895(int startOffset)
+         {
+             var fileOffset = startOffset + 0x34; // Set position at start of flags
++            var modelToken = MemoryHelper.ReadUInt64(Sector.Stream, fileOffset + 0x05);
+             var addPartsCount = MemoryHelper.ReadInt32(Sector.Stream, fileOffset += 0x05 + 0x18); // 0x05(flags) + 0x18(modelToken, model_look, model_variant)
++            TsMap.Eucatur.Pontos.Add("objeto", modelToken, MemoryHelper.ReadUInt64(Sector.Stream, fileOffset + 0x04 + 0x08 * addPartsCount));
+             fileOffset += 0x04 + (0x08 * addPartsCount) + 0x24; // 0x04(addPartsCount) + partTokens + 0x24(node_uid + vec3 scale + terrain_mat + terrain_col + terrain_rot)
+             BlockSize = fileOffset - startOffset;
+         }
+diff --git a/TsMap/TsItem/TsRoadSideItem.cs b/TsMap/TsItem/TsRoadSideItem.cs
+index afdd876..2acee23 100644
+--- a/TsMap/TsItem/TsRoadSideItem.cs
++++ b/TsMap/TsItem/TsRoadSideItem.cs
+@@ -1,4 +1,4 @@
+-﻿using System.IO;
++using System.IO;
+ using TsMap.Helpers;
+ using TsMap.Helpers.Logger;
+ 
+@@ -158,6 +158,7 @@ namespace TsMap.TsItem
+         public void TsRoadSideItem875(int startOffset)
+         {
+             var fileOffset = startOffset + 0x34; // Set position at start of flags
++            TsMap.Eucatur.Pontos.Add("placa", MemoryHelper.ReadUInt64(Sector.Stream, fileOffset + 0x05), MemoryHelper.ReadUInt64(Sector.Stream, fileOffset + 0x05 + 0x08));
+             var boardCount = MemoryHelper.ReadInt8(Sector.Stream, fileOffset += 0x05 + 0x20); // 0x05(flags) + 0x20(sign_model & node_uid & look & variant)
+             fileOffset += 0x01 + boardCount * 0x18; // 0x01(boardCount) + boardCount * 0x18(sign_template_t)
+ 
+@@ -205,6 +206,7 @@ namespace TsMap.TsItem
+         public void TsRoadSideItem906(int startOffset)
+         {
+             var fileOffset = startOffset + 0x34; // Set position at start of flags
++            TsMap.Eucatur.Pontos.Add("placa", MemoryHelper.ReadUInt64(Sector.Stream, fileOffset + 0x05), MemoryHelper.ReadUInt64(Sector.Stream, fileOffset + 0x05 + 0x08));
+             var boardCount = MemoryHelper.ReadInt8(Sector.Stream, fileOffset += 0x05 + 0x20); // 0x05(flags) + 0x20(sign_model & node_uid & look & variant)
+             fileOffset += 0x01 + boardCount * 0x18; // 0x01(boardCount) + boardCount * 0x18(sign_template_t)
+ 
+diff --git a/TsMap/TsItem/TsTrafficRuleItem.cs b/TsMap/TsItem/TsTrafficRuleItem.cs
+index 2df1402..2463113 100644
+--- a/TsMap/TsItem/TsTrafficRuleItem.cs
++++ b/TsMap/TsItem/TsTrafficRuleItem.cs
+@@ -1,4 +1,4 @@
+-﻿using System.IO;
++using System.IO;
+ using TsMap.Helpers;
+ using TsMap.Helpers.Logger;
+ 
+@@ -22,7 +22,9 @@ namespace TsMap.TsItem
+         {
+             var fileOffset = startOffset + 0x34; // Set position at start of flags
+             var nodeCount = MemoryHelper.ReadInt32(Sector.Stream, fileOffset += 0x05); // 0x05(flags)
++            var firstNode = nodeCount > 0 ? MemoryHelper.ReadUInt64(Sector.Stream, fileOffset + 0x04) : 0UL;
+             fileOffset += 0x04 + 0x08 * nodeCount + 0x0C; // 0x04(nodeCount) + nodeUids + 0x0C(traffic_rule_id & range)
++            TsMap.Eucatur.Pontos.Add("regra", MemoryHelper.ReadUInt64(Sector.Stream, fileOffset - 0x0C), firstNode);
+             BlockSize = fileOffset - startOffset;
+         }
+         public void TsTrafficRuleItem834(int startOffset)
+@@ -30,7 +32,9 @@ namespace TsMap.TsItem
+             var fileOffset = startOffset + 0x34; // Set position at start of flags
+             var tagCount = MemoryHelper.ReadInt32(Sector.Stream, fileOffset += 0x05); // 0x05(flags)
+             var nodeCount = MemoryHelper.ReadInt32(Sector.Stream, fileOffset += 0x04 + (0x08 * tagCount)); // 0x04(tagCount) + tags;
++            var firstNode = nodeCount > 0 ? MemoryHelper.ReadUInt64(Sector.Stream, fileOffset + 0x04) : 0UL;
+             fileOffset += 0x04 + 0x08 * nodeCount + 0x0C; // 0x04(nodeCount) + nodeUids + 0x0C(traffic_rule_id & range)
++            TsMap.Eucatur.Pontos.Add("regra", MemoryHelper.ReadUInt64(Sector.Stream, fileOffset - 0x0C), firstNode);
+             BlockSize = fileOffset - startOffset;
+         }
+     }
+diff --git a/TsMap/TsItem/TsTriggerItem.cs b/TsMap/TsItem/TsTriggerItem.cs
+index 0db9bef..3adc49f 100644
+--- a/TsMap/TsItem/TsTriggerItem.cs
++++ b/TsMap/TsItem/TsTriggerItem.cs
+@@ -1,4 +1,4 @@
+-﻿using System.IO;
++using System.IO;
+ using TsMap.Common;
+ using TsMap.Helpers;
+ using TsMap.Helpers.Logger;
+@@ -68,12 +68,14 @@ namespace TsMap.TsItem
+             var tagCount = MemoryHelper.ReadInt32(Sector.Stream, fileOffset += 0x05); // 0x05(flags)
+             var nodeCount = MemoryHelper.ReadInt32(Sector.Stream, fileOffset += 0x04 + (0x08 * tagCount)); // 0x04(nodeCount) + tags
+ 
++            var trgFirstNode = nodeCount > 0 ? MemoryHelper.ReadUInt64(Sector.Stream, fileOffset + 0x04) : 0UL;
+             var triggerActionCount = MemoryHelper.ReadInt32(Sector.Stream, fileOffset += 0x04 + (0x08 * nodeCount)); // 0x04(nodeCount) + nodeUids
+             fileOffset += 0x04; // cursor after triggerActionCount
+ 
+             for (var i = 0; i < triggerActionCount; i++)
+             {
+                 var action = MemoryHelper.ReadUInt64(Sector.Stream, fileOffset);
++                TsMap.Eucatur.Pontos.Add("gatilho", action, trgFirstNode);
+                 if (action == ScsToken.StringToToken("hud_parking"))
+                 {
+                     CreateMapOverlay();
+@@ -107,12 +109,14 @@ namespace TsMap.TsItem
+             var tagCount = MemoryHelper.ReadInt32(Sector.Stream, fileOffset += 0x05); // 0x05(flags)
+             var nodeCount = MemoryHelper.ReadInt32(Sector.Stream, fileOffset += 0x04 + (0x08 * tagCount)); // 0x04(nodeCount) + tags
+ 
++            var trgFirstNode = nodeCount > 0 ? MemoryHelper.ReadUInt64(Sector.Stream, fileOffset + 0x04) : 0UL;
+             var triggerActionCount = MemoryHelper.ReadInt32(Sector.Stream, fileOffset += 0x04 + (0x08 * nodeCount)); // 0x04(nodeCount) + nodeUids
+             fileOffset += 0x04; // cursor after triggerActionCount
+ 
+             for (var i = 0; i < triggerActionCount; i++)
+             {
+                 var action = MemoryHelper.ReadUInt64(Sector.Stream, fileOffset);
++                TsMap.Eucatur.Pontos.Add("gatilho", action, trgFirstNode);
+                 if (action == ScsToken.StringToToken("hud_parking"))
+                 {
+                     CreateMapOverlay();
+diff --git a/TsMap/TsMap.csproj b/TsMap/TsMap.csproj
+index 4788e3b..57d2f62 100644
+--- a/TsMap/TsMap.csproj
++++ b/TsMap/TsMap.csproj
+@@ -1,4 +1,4 @@
+-﻿<?xml version="1.0" encoding="utf-8"?>
++<?xml version="1.0" encoding="utf-8"?>
+ <Project ToolsVersion="15.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+   <Import Project="$(MSBuildExtensionsPath)\$(MSBuildToolsVersion)\Microsoft.Common.props" Condition="Exists('$(MSBuildExtensionsPath)\$(MSBuildToolsVersion)\Microsoft.Common.props')" />
+   <PropertyGroup>
+@@ -90,6 +90,9 @@
+     <Compile Include="Helpers\Logger\Logger.cs" />
+     <Compile Include="Helpers\Logger\LogLine.cs" />
+     <Compile Include="Helpers\PathHelper.cs" />
++    <Compile Include="Helpers\SafePath.cs" />
++    <Compile Include="Eucatur\NavExporter.cs" />
++    <Compile Include="Eucatur\Pontos.cs" />
+     <Compile Include="Common\ScsToken.cs" />
+     <Compile Include="JsonHelper.cs" />
+     <Compile Include="MapPalette.cs" />
+diff --git a/TsMap/TsMapper.cs b/TsMap/TsMapper.cs
+index fceb5a7..a4b0918 100644
+--- a/TsMap/TsMapper.cs
++++ b/TsMap/TsMapper.cs
+@@ -48,9 +48,16 @@ namespace TsMap
+         public float maxZ = float.MinValue;
+ 
+         private List<TsSector> Sectors { get; set; }
++        private List<string> _auxFiles = new List<string>(); // Eucatur: .aux tem objetos (ex.: radares)
+ 
+         internal readonly List<TsItem.TsItem> MapItems = new List<TsItem.TsItem>();
+ 
++        /// <summary>Eucatur: nomes dos mods carregados (vai no mapa-info.json da exportacao).</summary>
++        public IEnumerable<string> ModsCarregados()
++        {
++            return (_mods ?? new List<Mod>()).Where(x => x.Load).Select(x => System.IO.Path.GetFileName(x.ModPath));
++        }
++
+         public TsMapper(string gameDir, List<Mod> mods)
+         {
+             _gameDir = gameDir;
+@@ -361,6 +368,7 @@ namespace TsMap
+             }
+ 
+             _sectorFiles = new List<string>();
++            _auxFiles = new List<string>();
+ 
+             foreach (var filePath in mbdFilePaths)
+             {
+@@ -375,6 +383,7 @@ namespace TsMap
+                 }
+ 
+                 _sectorFiles.AddRange(mapFileDir.GetFilesByExtension($"map/{mapName}", ".base"));
++                _auxFiles.AddRange(mapFileDir.GetFilesByExtension($"map/{mapName}", ".aux"));
+             }
+         }
+ 
+@@ -415,13 +424,33 @@ namespace TsMap
+             if (_sectorFiles == null) return;
+             var preMapParseTime = DateTime.Now.Ticks;
+             Sectors = _sectorFiles.Select(file => new TsSector(this, file)).ToList();
+-            Sectors.ForEach(sec => sec.Parse());
++            Sectors.ForEach(sec =>
++            {
++                try { sec.Parse(); }
++                catch (Exception ex) { Logger.Instance.Warning($"Setor ignorado '{sec.FilePath}': {ex.Message}"); }
++            });
+             Sectors.ForEach(sec => sec.ClearFileData());
+             Logger.Instance.Info($"It took {(DateTime.Now.Ticks - preMapParseTime) / TimeSpan.TicksPerMillisecond} ms to parse all (*.base) files");
+ 
++            // Eucatur: le tambem os .aux (objetos/modelos) so pra achar pontos como radar e lombada.
++            var auxOk = 0;
++            foreach (var auxFile in _auxFiles)
++            {
++                try
++                {
++                    var aux = new TsSector(this, auxFile);
++                    aux.Parse();
++                    aux.ClearFileData();
++                    auxOk++;
++                }
++                catch (Exception ex) { Logger.Instance.Warning($"Aux ignorado '{auxFile}': {ex.Message}"); }
++            }
++            Logger.Instance.Info($"Arquivos .aux lidos: {auxOk} de {_auxFiles.Count}");
++
+             foreach (var mapItem in MapItems)
+             {
+-                mapItem.Update();
++                try { mapItem.Update(); }
++                catch (Exception ex) { Logger.Instance.Warning($"Item ignorado: {ex.Message}"); }
+             }
+ 
+             var invalidFerryConnections = _ferryConnectionLookup.Where(x => x.StartPortLocation == PointF.Empty || x.EndPortLocation == PointF.Empty).ToList();
+diff --git a/TsMap/TsNode.cs b/TsMap/TsNode.cs
+index 1e76e57..25cdff0 100644
+--- a/TsMap/TsNode.cs
++++ b/TsMap/TsNode.cs
+@@ -1,4 +1,4 @@
+-﻿using System;
++using System;
+ using TsMap.Helpers;
+ 
+ namespace TsMap
+@@ -10,10 +10,14 @@ namespace TsMap
+         public float X { get; }
+         public float Z { get; }
+         public float Rotation { get; }
++        public ulong BackwardItemUid { get; }
++        public ulong ForwardItemUid { get; }
+ 
+ 
+         public TsNode(TsSector sector, int fileOffset)
+         {
++            BackwardItemUid = MemoryHelper.ReadUInt64(sector.Stream, fileOffset + 0x24);
++            ForwardItemUid = MemoryHelper.ReadUInt64(sector.Stream, fileOffset + 0x2C);
+             Uid = MemoryHelper.ReadUInt64(sector.Stream, fileOffset);
+             X = MemoryHelper.ReadInt32(sector.Stream, fileOffset += 0x08) / 256f;
+             Z = MemoryHelper.ReadInt32(sector.Stream, fileOffset += 0x08) / 256f;
+diff --git a/TsMap/TsPrefab.cs b/TsMap/TsPrefab.cs
+index 41469ce..2d6c389 100644
+--- a/TsMap/TsPrefab.cs
++++ b/TsMap/TsPrefab.cs
+@@ -6,8 +6,19 @@ using TsMap.Helpers.Logger;
+ 
+ namespace TsMap
+ {
++    public class TsPrefabCurve
++    {
++        public float StartX, StartZ, EndX, EndZ;
++        public float StartRotW, StartRotX, StartRotY, StartRotZ;
++        public float EndRotW, EndRotX, EndRotY, EndRotZ;
++        public float Length;
++        public List<int> NextLines = new List<int>();
++    }
++
+     public struct TsPrefabNode
+     {
++        public List<int> InputLanes;
++        public List<int> OutputLanes;
+         public float X;
+         public float Z;
+         public float RotX;
+@@ -64,6 +75,7 @@ namespace TsMap
+         public List<TsSpawnPoint> SpawnPoints { get; private set; }
+         public List<TsMapPoint> MapPoints { get; private set; }
+         public List<TsTriggerPoint> TriggerPoints { get; private set; }
++        public List<TsPrefabCurve> NavCurves { get; private set; }
+ 
+         public TsPrefab(string filePath, ulong token, string category)
+         {
+@@ -86,6 +98,7 @@ namespace TsMap
+             SpawnPoints = new List<TsSpawnPoint>();
+             MapPoints = new List<TsMapPoint>();
+             TriggerPoints = new List<TsTriggerPoint>();
++            NavCurves = new List<TsPrefabCurve>();
+ 
+             var fileOffset = 0x0;
+ 
+@@ -122,22 +135,64 @@ namespace TsMap
+                     RotZ = MemoryHelper.ReadSingle(_stream, nodeBaseOffset + 0x24),
+                 };
+ 
++                node.InputLanes = new List<int>();
++                node.OutputLanes = new List<int>();
+                 int laneCount = 0;
+                 var nodeFileOffset = nodeBaseOffset + 0x24;
+                 for (var j = 0; j < 8; j++)
+                 {
+-                    if (MemoryHelper.ReadInt32(_stream, nodeFileOffset += 0x04) != -1) laneCount++;
++                    var lane = MemoryHelper.ReadInt32(_stream, nodeFileOffset += 0x04);
++                    if (lane != -1) { laneCount++; node.InputLanes.Add(lane); }
+                 }
+ 
+                 for (var j = 0; j < 8; j++)
+                 {
+-                    if (MemoryHelper.ReadInt32(_stream, nodeFileOffset += 0x04) != -1) laneCount++;
++                    var lane = MemoryHelper.ReadInt32(_stream, nodeFileOffset += 0x04);
++                    if (lane != -1) { laneCount++; node.OutputLanes.Add(lane); }
+                 }
+                 node.LaneCount = laneCount;
+ 
+                 PrefabNodes.Add(node);
+             }
+ 
++            try
++            {
++                var navCurveOffset = MemoryHelper.ReadInt32(_stream, version > 0x15 ? 0x34 : 0x30);
++                var curveSize = version > 0x15 ? 132 : 128;
++                for (var i = 0; i < navCurveCount; i++)
++                {
++                    var b = navCurveOffset + i * curveSize;
++                    var c = new TsPrefabCurve
++                    {
++                        StartX = MemoryHelper.ReadSingle(_stream, b + 0x10),
++                        StartZ = MemoryHelper.ReadSingle(_stream, b + 0x18),
++                        EndX = MemoryHelper.ReadSingle(_stream, b + 0x1C),
++                        EndZ = MemoryHelper.ReadSingle(_stream, b + 0x24),
++                        StartRotW = MemoryHelper.ReadSingle(_stream, b + 0x28),
++                        StartRotX = MemoryHelper.ReadSingle(_stream, b + 0x2C),
++                        StartRotY = MemoryHelper.ReadSingle(_stream, b + 0x30),
++                        StartRotZ = MemoryHelper.ReadSingle(_stream, b + 0x34),
++                        EndRotW = MemoryHelper.ReadSingle(_stream, b + 0x38),
++                        EndRotX = MemoryHelper.ReadSingle(_stream, b + 0x3C),
++                        EndRotY = MemoryHelper.ReadSingle(_stream, b + 0x40),
++                        EndRotZ = MemoryHelper.ReadSingle(_stream, b + 0x44),
++                        Length = MemoryHelper.ReadSingle(_stream, b + 0x48),
++                    };
++                    var countNext = MemoryHelper.ReadInt32(_stream, b + 0x6C);
++                    for (var j = 0; j < Math.Min(4, Math.Max(0, countNext)); j++)
++                    {
++                        var next = MemoryHelper.ReadInt32(_stream, b + 0x4C + j * 4);
++                        if (next >= 0) c.NextLines.Add(next);
++                    }
++                    NavCurves.Add(c);
++                }
++            }
++            catch (Exception ex)
++            {
++                Logger.Instance.Warning($"Curvas de navegacao ignoradas em {FilePath}: {ex.Message}");
++                NavCurves.Clear();
++            }
++
+             var spawnPointBlockSize = version >= 24 ? SpawnPointV24BlockSize : SpawnPointBlockSize;
+ 
+             for (var i = 0; i < spawnPointCount; i++)
