@@ -31,6 +31,9 @@ use crate::maps::PlayedMap;
 use westplay_mapdata::junctions::{self, Junctions, Maneuver};
 use westplay_setup::map;
 use westplay_shared::BridgeMapping;
+use westplay_shared::navigator::{
+    NEXT_NODE, NextNode, ROUTE_WALK, SET_TARGETS, find_unique, read_next_node, read_route_walk, read_set_targets,
+};
 use windows::Win32::Foundation::{CloseHandle, HANDLE};
 use windows::Win32::System::Diagnostics::Debug::ReadProcessMemory;
 use windows::Win32::System::Diagnostics::ToolHelp::{
@@ -43,16 +46,23 @@ const READ_EVERY: Duration = Duration::from_millis(500);
 
 const NAVIGATOR_ROUTE_ID: usize = 0x10;
 const NAVIGATOR_HOLDER: usize = 0x28;
+// Eucatur Play (nov/2026): the next node, the waypoints' list and a route node's size are read from the game's
+// own code (westplay_shared::navigator, from WestPlay 2.4.0): ETS2 1.62 (with the Coaches DLC) moved them.
+// These are 1.61's, kept for the tests.
+#[cfg(test)]
 const NAVIGATOR_NEXT_ID: usize = 0x190;
+#[cfg(test)]
 const NAVIGATOR_NEXT: usize = 0x198;
 const HOLDER_ROUTE: usize = 0x78;
 /// The navigator's waypoints, in the order they were put in (an array: its entries at `+0x08`, their count at
 /// `+0x10`); each entry 0x18 bytes, its map node's pointer at `+0x08` (the destination isn't among them).
+#[cfg(test)]
 const NAVIGATOR_WAYPOINTS: usize = 0x248;
 const WAYPOINT_SIZE: usize = 0x18;
 const WAYPOINT_NODE: usize = 0x08;
 /// More waypoints than the game takes: a count past this is a layout misread.
 const MAX_WAYPOINTS: usize = 64;
+#[cfg(test)]
 const NODE_SIZE: usize = 0x30;
 /// A route node's distance left to the destination (a float).
 const ROUTE_NODE_DISTANCE: usize = 0x24;
@@ -66,6 +76,12 @@ const MAX_NODES: usize = 200_000;
 pub struct Layout {
     pub global_rva: usize,
     pub navigator: usize,
+    /// The navigator's next node ahead and the route id it's for (offsets into the navigator).
+    pub next: NextNode,
+    /// The navigator's waypoints' list (an offset into the navigator).
+    pub waypoints: usize,
+    /// A route node's size.
+    pub node_size: usize,
 }
 
 /// One of the route's map nodes: where it is, which way it points (the way of the roads through it,
@@ -142,7 +158,7 @@ impl RouteWatch {
                 }
                 let updates = match &game {
                     Some(game) => {
-                        reader.poll(&game.process, game.process.base + game.layout.global_rva, game.layout.navigator)
+                        reader.poll(&game.process, game.process.base + game.layout.global_rva, &game.layout)
                     }
                     None => reader.lost(),
                 };
@@ -192,8 +208,8 @@ type RouteKey = (u32, usize, usize);
 impl RouteReader {
     /// What changed since the last poll, read from the navigator (`navigator` bytes into the object the
     /// global at `global` points to).
-    fn poll(&mut self, memory: &impl Memory, global: usize, navigator: usize) -> Vec<RouteUpdate> {
-        let Some(header) = read_header(memory, global, navigator) else { return self.lost() };
+    fn poll(&mut self, memory: &impl Memory, global: usize, layout: &Layout) -> Vec<RouteUpdate> {
+        let Some(header) = read_header(memory, global, layout) else { return self.lost() };
         let key = (header.id, header.array, header.count);
         let mut updates = Vec::new();
         if self.route.as_ref().map(|(seen, _, _)| *seen) != Some(key) {
@@ -209,7 +225,7 @@ impl RouteReader {
             self.number = self.number.wrapping_add(1);
             self.sent_next = None;
             // Its waypoints with it: the game plans anew as they change.
-            let waypoints = read_waypoints(memory, global, navigator).unwrap_or_default();
+            let waypoints = read_waypoints(memory, global, layout).unwrap_or_default();
             updates.push(RouteUpdate::Route { id: self.number, nodes: nodes.clone(), waypoints });
             self.route = Some((key, nodes, after));
         }
@@ -250,14 +266,15 @@ struct Header {
     array: usize,
     count: usize,
     next_index: usize,
+    node_size: usize,
 }
 
-fn read_header(memory: &impl Memory, global: usize, navigator: usize) -> Option<Header> {
+fn read_header(memory: &impl Memory, global: usize, layout: &Layout) -> Option<Header> {
     let owner = memory.u64_at(global)? as usize;
     if owner == 0 {
         return None;
     }
-    let navigator = owner.checked_add(navigator)?;
+    let navigator = owner.checked_add(layout.navigator)?;
     let id = memory.u64_at(navigator.checked_add(NAVIGATOR_ROUTE_ID)?)? as u32;
     let holder = memory.u64_at(navigator.checked_add(NAVIGATOR_HOLDER)?)? as usize;
     if holder == 0 {
@@ -269,20 +286,21 @@ fn read_header(memory: &impl Memory, global: usize, navigator: usize) -> Option<
     if array == 0 || count == 0 || count > MAX_NODES {
         return None;
     }
-    let end = array.checked_add(count * NODE_SIZE)?;
-    let next_id = memory.u64_at(navigator.checked_add(NAVIGATOR_NEXT_ID)?)? as u32;
-    let next = memory.u64_at(navigator.checked_add(NAVIGATOR_NEXT)?)? as usize;
+    let size = layout.node_size;
+    let end = array.checked_add(count.checked_mul(size)?)?;
+    let next_id = memory.u64_at(navigator.checked_add(layout.next.id)?)? as u32;
+    let next = memory.u64_at(navigator.checked_add(layout.next.node)?)? as usize;
     // The next node ahead: a node of this route (the pointer may still be an old route's).
-    let in_route = next >= array && next < end && (next - array).is_multiple_of(NODE_SIZE);
-    let next_index = if next_id == id && in_route { (next - array) / NODE_SIZE } else { 0 };
-    Some(Header { id, array, count, next_index })
+    let in_route = next >= array && next < end && (next - array).is_multiple_of(size);
+    let next_index = if next_id == id && in_route { (next - array) / size } else { 0 };
+    Some(Header { id, array, count, next_index, node_size: size })
 }
 
 /// The navigator's waypoints: their map nodes' uids, in the order they were put in; `None` if what's read
 /// doesn't add up.
-fn read_waypoints(memory: &impl Memory, global: usize, navigator: usize) -> Option<Vec<u64>> {
+fn read_waypoints(memory: &impl Memory, global: usize, layout: &Layout) -> Option<Vec<u64>> {
     let owner = memory.u64_at(global)? as usize;
-    let list = owner.checked_add(navigator)?.checked_add(NAVIGATOR_WAYPOINTS)?;
+    let list = owner.checked_add(layout.navigator)?.checked_add(layout.waypoints)?;
     let count = memory.u64_at(list.checked_add(0x10)?)? as usize;
     if count == 0 {
         return Some(Vec::new());
@@ -307,14 +325,14 @@ fn read_waypoints(memory: &impl Memory, global: usize, navigator: usize) -> Opti
 /// The route's map nodes, and for each of its nodes in memory, the map node at or after it (where the truck
 /// is along the map nodes when it's at that node); `None` without any, or if what's read doesn't add up.
 fn read_nodes(memory: &impl Memory, header: &Header) -> Option<(Vec<RouteNode>, Vec<usize>)> {
-    let mut raw = vec![0u8; header.count * NODE_SIZE];
+    let mut raw = vec![0u8; header.count * header.node_size];
     if !memory.read(header.array, &mut raw) {
         return None;
     }
     let mut nodes = Vec::new();
     // For each node in memory, the map node before which it lies.
     let mut before = Vec::with_capacity(header.count);
-    for node in raw.chunks_exact(NODE_SIZE) {
+    for node in raw.chunks_exact(header.node_size) {
         before.push(nodes.len());
         match u32::from_le_bytes(node[0..4].try_into().unwrap()) {
             0 => {
@@ -565,6 +583,16 @@ pub(crate) fn section<'a>(image: &'a [u8], name: &[u8]) -> Option<Section<'a>> {
 /// (`lea rax, [getter]` a little before `lea …, [name]`) starts `sub rsp, 28h; mov rax, [global]`, and
 /// soon `lea rcx, [rax + navigator]`.
 fn locate(text: &Section, rdata: &Section) -> Option<Layout> {
+    let (global_rva, navigator) = locate_getter(text, rdata)?;
+    let code = text.bytes;
+    let next = read_next_node(&code[find_unique(code, &NEXT_NODE)?..])?;
+    let waypoints = read_set_targets(&code[find_unique(code, &SET_TARGETS)?..])?.waypoints;
+    let node_size = read_route_walk(&code[find_unique(code, &ROUTE_WALK)?..])?;
+    Some(Layout { global_rva, navigator, next, waypoints, node_size })
+}
+
+/// The global and the navigator's offset in its object, from the distance getter (as [`locate`] says).
+fn locate_getter(text: &Section, rdata: &Section) -> Option<(usize, usize)> {
     let name = b"truck.navigation.distance\0";
     let name_rva = rdata.rva + rdata.bytes.windows(name.len()).position(|w| w == name)?;
     let code = text.bytes;
@@ -579,18 +607,18 @@ fn locate(text: &Section, rdata: &Section) -> Option<Layout> {
         for back in 1..=64 {
             let Some(getter) = site.checked_sub(back).and_then(lea_target) else { continue };
             let Some(start) = getter.checked_sub(text.rva) else { continue };
-            if let Some(layout) = read_getter(code, start, getter) {
-                return Some(layout);
+            if let Some(found) = read_getter(code, start, getter) {
+                return Some(found);
             }
         }
     }
     None
 }
 
-/// The layout a distance getter at `start` in the code (rva `rva`) reads: `48 83 EC 28` (sub rsp, 28h),
-/// `48 8B 05 disp32` (mov rax, [rip + disp32]: the global), then within a few instructions `48 8D 88 imm32`
-/// (lea rcx, [rax + imm32]: the navigator).
-fn read_getter(code: &[u8], start: usize, rva: usize) -> Option<Layout> {
+/// The global and navigator a distance getter at `start` in the code (rva `rva`) reads: `48 83 EC 28` (sub rsp,
+/// 28h), `48 8B 05 disp32` (mov rax, [rip + disp32]: the global), then within a few instructions
+/// `48 8D 88 imm32` (lea rcx, [rax + imm32]: the navigator).
+fn read_getter(code: &[u8], start: usize, rva: usize) -> Option<(usize, usize)> {
     let b = code.get(start..start + 48)?;
     if b[..4] != [0x48, 0x83, 0xec, 0x28] || b[4..7] != [0x48, 0x8b, 0x05] {
         return None;
@@ -598,7 +626,7 @@ fn read_getter(code: &[u8], start: usize, rva: usize) -> Option<Layout> {
     let global_rva = (rva + 11).wrapping_add_signed(i32::from_le_bytes(b[7..11].try_into().unwrap()) as isize);
     let at = (11..b.len() - 7).find(|&i| b[i..i + 3] == [0x48, 0x8d, 0x88])?;
     let navigator = u32::from_le_bytes(b[at + 3..at + 7].try_into().unwrap()) as usize;
-    Some(Layout { global_rva, navigator })
+    Some((global_rva, navigator))
 }
 
 #[cfg(test)]
@@ -634,6 +662,14 @@ mod tests {
     const GLOBAL: usize = 0x1000;
     const OWNER: usize = 0x10_000;
     const NAVIGATOR: usize = 0x40;
+    /// The navigator laid out as ETS2 1.61 has it.
+    const LAYOUT: Layout = Layout {
+        global_rva: 0,
+        navigator: NAVIGATOR,
+        next: NextNode { id: NAVIGATOR_NEXT_ID, node: NAVIGATOR_NEXT },
+        waypoints: NAVIGATOR_WAYPOINTS,
+        node_size: NODE_SIZE,
+    };
     const HOLDER: usize = 0x20_000;
     const ARRAY: usize = 0x30_000;
     const MAP_NODES: usize = 0x40_000;
@@ -670,7 +706,7 @@ mod tests {
     }
 
     fn poll(reader: &mut RouteReader, memory: &FakeMemory) -> Vec<RouteUpdate> {
-        reader.poll(memory, GLOBAL, NAVIGATOR)
+        reader.poll(memory, GLOBAL, &LAYOUT)
     }
 
     fn summary(updates: &[RouteUpdate]) -> Vec<String> {
@@ -705,11 +741,11 @@ mod tests {
         let updates = poll(&mut reader, &memory);
         assert!(matches!(&updates[0], RouteUpdate::Route { waypoints, .. } if waypoints == &[2, 1]), "{updates:?}");
         // A list that can't be read: none known (not an empty list).
-        assert_eq!(read_waypoints(&navigator(77, &[0], 0, 77), GLOBAL, NAVIGATOR), None);
+        assert_eq!(read_waypoints(&navigator(77, &[0], 0, 77), GLOBAL, &LAYOUT), None);
         // An empty one: none.
         let mut empty = navigator(77, &[0], 0, 77);
         empty.blocks.get_mut(&OWNER).unwrap().resize(NAVIGATOR + NAVIGATOR_WAYPOINTS + 0x18, 0);
-        assert_eq!(read_waypoints(&empty, GLOBAL, NAVIGATOR), Some(Vec::new()));
+        assert_eq!(read_waypoints(&empty, GLOBAL, &LAYOUT), Some(Vec::new()));
     }
 
     #[test]
@@ -761,12 +797,12 @@ mod tests {
         // No navigator object.
         let mut memory = navigator(4, &[0], 0, 4);
         memory.blocks.insert(GLOBAL, 0u64.to_le_bytes().to_vec());
-        assert!(read_header(&memory, GLOBAL, NAVIGATOR).is_none());
+        assert!(read_header(&memory, GLOBAL, &LAYOUT).is_none());
         // A count past any real route's.
         let mut memory = navigator(4, &[0], 0, 4);
         let holder = memory.blocks.get_mut(&HOLDER).unwrap();
         holder[HOLDER_ROUTE + 0x10..HOLDER_ROUTE + 0x18].copy_from_slice(&((MAX_NODES + 1) as u64).to_le_bytes());
-        assert!(read_header(&memory, GLOBAL, NAVIGATOR).is_none());
+        assert!(read_header(&memory, GLOBAL, &LAYOUT).is_none());
     }
 
     #[test]
@@ -792,11 +828,11 @@ mod tests {
         };
         lea(&mut code, 0x100, 0x1040);
         lea(&mut code, 0x10d, 0x2010);
-        let layout = locate(&Section { rva: 0x1000, bytes: &code }, &Section { rva: 0x2000, bytes: &rdata });
-        assert_eq!(layout, Some(Layout { global_rva: 0x9000, navigator: 0x4128 }));
+        let found = locate_getter(&Section { rva: 0x1000, bytes: &code }, &Section { rva: 0x2000, bytes: &rdata });
+        assert_eq!(found, Some((0x9000, 0x4128)));
         // Without the name, or with a different getter, nothing.
         let other = vec![0u8; 0x40];
-        assert_eq!(locate(&Section { rva: 0x1000, bytes: &code }, &Section { rva: 0x2000, bytes: &other }), None);
+        assert_eq!(locate_getter(&Section { rva: 0x1000, bytes: &code }, &Section { rva: 0x2000, bytes: &other }), None);
     }
 
     #[test]

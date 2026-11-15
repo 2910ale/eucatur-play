@@ -9,6 +9,7 @@
 //!   fields are atomics or plain data guarded by a [`SeqLock`], so either side may start first.
 
 pub mod cityhash;
+pub mod navigator;
 
 use std::cell::UnsafeCell;
 use std::sync::LazyLock;
