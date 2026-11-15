@@ -3,6 +3,8 @@ on:
   push:
     branches: [tsmap-eucatur]
   workflow_dispatch:
+permissions:
+  contents: write
 jobs:
   build:
     runs-on: windows-2022
@@ -17,3 +19,13 @@ jobs:
           name: tsmap-eucatur-v7
           path: TsMap.Canvas/bin/x64/Release/
           if-no-files-found: error
+      # Download público (sem login no GitHub): um zip numa versão própria, marcada como pré-lançamento e
+      # nunca como "latest" — a atualização automática do Eucatur Play lê a "latest".
+      - name: Publicar o zip para download
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          Compress-Archive -Path TsMap.Canvas/bin/x64/Release/* -DestinationPath TsMap-Eucatur.zip -Force
+          gh release delete tsmap-eucatur --yes --cleanup-tag 2>$null
+          gh release create tsmap-eucatur TsMap-Eucatur.zip --target ${{ github.sha }} --title "ts-map Eucatur (exportar mapas para o GPS)" --notes "Abra TsMapCanvas.exe. Use Exportar navegação e radares (Eucatur) e Generate Tile Map (Cities e TileMapInfo)." --prerelease --latest=false
