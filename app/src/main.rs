@@ -162,6 +162,8 @@ fn eucatur_install(app: AppHandle) -> Result<(), String> {
         return Err("O Instalador Eucatur não veio com esta cópia do Eucatur Play. Reinstale o Eucatur Play.".into());
     }
     std::process::Command::new(&installer).spawn().map(|_| ()).map_err(|error| error.to_string())
+}
+
 /// WestPlay's pages elsewhere, at the foot of the companion's list.
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
