@@ -44,7 +44,7 @@ export const words: CompanionWords = {
     subs: {
       starting: 'WestPlay is getting ready.',
       stopped: 'WestPlay’s engine stopped. The details are under About.',
-      noGame: 'Start Euro Truck Simulator 2, and WestPlay connects to it.',
+      noGame: 'Start the game, and WestPlay connects to it.',
       unsupported:
         'WestPlay doesn’t show on this truck’s screen. Fit the WestPlay tablet to your truck, and WestPlay shows on it.',
       notInCab: 'The game is connected. Sit in the cab with the electrics on, and WestPlay appears on the screen.',
@@ -57,7 +57,6 @@ export const words: CompanionWords = {
     engine: 'WestPlay engine',
     engineRunning: 'Running',
     engineStarting: 'Starting…',
-    game: 'Euro Truck Simulator 2',
     gameConnected: 'Connected',
     gameNotRunning: 'Not running',
     truckScreen: 'Truck screen',
@@ -68,6 +67,15 @@ export const words: CompanionWords = {
     gpuAutoDetail: 'The one the game runs on',
     gpuInUse: 'In use',
     gpuNote: 'If the screen stutters, pick another card. WestPlay starts again on it.',
+    coachSpeakers: 'Coach speakers',
+    coachDriver: 'Driver’s speakers',
+    coachDriverDetail: 'The speakers at the driver’s seat',
+    coachPassengers: 'Passengers’ speakers',
+    coachPassengersDetail: 'Every speaker above the seats',
+    coachNote:
+      'The passengers’ speakers of this coach: {n}, all playing at once. On a weak processor, the game can stutter with them.',
+    coachNoteAny:
+      'In a coach, the passengers’ speakers all play at once. On a weak processor, the game can stutter with them.',
     elevated: {
       title: 'The game is running as administrator',
       text: 'WestPlay can’t see its route, guidance or weather then. Start the game normally, not as administrator.',
@@ -75,7 +83,7 @@ export const words: CompanionWords = {
     banners: {
       live: { title: 'Connected', text: 'WestPlay is on your truck’s screen' },
       original: { title: 'Truck’s own screen', text: 'WestPlay is a tap away' },
-      noGame: { title: 'Waiting for the game', text: 'Start Euro Truck Simulator 2' },
+      noGame: { title: 'Waiting for the game', text: 'Start the game' },
       unsupported: { title: 'Truck not supported', text: 'Fit the WestPlay tablet' },
       notInCab: { title: 'Game connected', text: 'Get in your truck' },
     },
@@ -98,6 +106,8 @@ export const words: CompanionWords = {
     volumeUp: 'Volume up',
     volumeDown: 'Volume down',
     playPause: 'Play/Pause',
+    brightnessDown: 'Brightness down',
+    brightnessUp: 'Brightness up',
     pressKey: 'Press a key…',
     keybindsNote:
       'Click a keybind, then press its new key. Hold {key} as you press it, and it works only while you use the screen. Esc cancels.',
@@ -118,11 +128,24 @@ export const words: CompanionWords = {
     },
     sub: 'Made from your own game, with your map DLCs and map mods, for each of your profiles.',
     prepareAgain: 'Prepare Maps Again',
+    pickText: 'The ticked maps are prepared again. Profiles that play the same map share it.',
+    prepare: 'Prepare',
+    buildings: '3D buildings',
+    buildingsDetail: 'Buildings rise up from the map.',
+    roads: '3D roads',
+    roadsDetail: 'Bridges and ramps rise to their real height.',
+    fast: 'Prepare maps faster',
+    fastDetail: 'Uses the whole processor and up to 80% of memory. For PCs with plenty of both.',
     inCab: 'In the cab',
     built: 'Prepared {date}',
     notBuilt: 'Not prepared yet',
     profiles: 'Your Profiles',
     checking: 'Looking at your profiles…',
+    gameStopped: {
+      title: 'Map preparation stopped',
+      text: 'You started the game while your map was being prepared, so preparing it stopped. It starts over once you close the game. Wait for your map to be ready before you play.',
+      ok: 'OK',
+    },
     memory: {
       title: 'Waiting for free memory',
       banner: { title: 'Waiting for free memory', text: 'Close some apps to prepare your map' },
@@ -146,6 +169,11 @@ export const words: CompanionWords = {
     closeGame: { title: 'Please close the game.', text: 'WestPlay can only be reinstalled while it isn’t running.' },
     checking: { title: 'Checking your game', text: 'Version, plugin and mods' },
     checked: { title: 'All checked', text: 'WestPlay is set up' },
+    language: 'Language',
+    languageAutomatic: 'Automatic',
+    languageAutomaticDetail: 'The game’s language: {name}',
+    languageNote:
+      'WestPlay uses this language on the truck’s screen and in this window. Place names on the map stay in the game’s language.',
   },
   tutorial: {
     intro: {

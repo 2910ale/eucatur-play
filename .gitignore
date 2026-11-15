@@ -29,3 +29,5 @@ dist/
 
 # Eucatur Play: o Instalador Eucatur baixado pela compilação (vai junto no instalador)
 /app/eucatur/
+# Real CarPlay photos the owner took, for reference only: Apple's UI in someone's car, never committed or shipped
+/reference/

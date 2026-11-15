@@ -10,6 +10,7 @@
 
 use westplay_mapdata::files::GameFiles;
 
+use crate::game::Kind;
 use crate::profiles::Profile;
 
 /// How a game has a truck.
@@ -17,6 +18,9 @@ use crate::profiles::Profile;
 pub enum Source {
     /// The game's own (or a DLC's): its definition, `def/vehicle/truck/<id>/data.sii`.
     Game(&'static str),
+    /// A bus of the game's (the Coaches DLC's, 2026-11-12: buses its own kind of vehicle beside trucks): its
+    /// definition, `def/vehicle/bus/<id>/data.sii`.
+    Bus(&'static str),
     /// A mod's, found by these words (all of them, in its name or file name): installed (in the game's `mod`
     /// folder or the Workshop), active in a profile or not.
     Mod(&'static [&'static str]),
@@ -35,6 +39,7 @@ pub struct Truck {
     pub layout: Option<&'static str>,
 }
 
+/// ETS2's.
 pub const TRUCKS: &[Truck] = &[
     Truck { id: "daf-xf-2021", name: "DAF XF 2021", source: Source::Game("daf.2021"), layout: Some("daf-2021") },
     Truck { id: "daf-xg-2021", name: "DAF XG & XG+ 2021", source: Source::Game("daf.2021"), layout: Some("daf-2021") },
@@ -113,6 +118,19 @@ pub const TRUCKS: &[Truck] = &[
         source: Source::Mod(&["setra", "531"]),
         layout: Some("setra-531"),
     },
+    // The Coaches DLC's buses whose real ones have CarPlay, WestPlay on their own screens (owner 2026-11-12).
+    Truck {
+        id: "scania-touring",
+        name: "Scania Touring",
+        source: Source::Bus("scania.touring_23"),
+        layout: Some("scania-touring"),
+    },
+    Truck {
+        id: "man-lions-coach-2024",
+        name: "MAN Lion's Coach (2024)",
+        source: Source::Bus("man.lions_24"),
+        layout: Some("man-lions-24"),
+    },
     // Any other truck, with WestPlay's tablet on its dashboard (owner 2026-10-24).
     Truck {
         id: "any-truck-tablet",
@@ -121,6 +139,51 @@ pub const TRUCKS: &[Truck] = &[
         layout: Some("tablet"),
     },
 ];
+
+/// ATS's: the trucks whose real counterparts offer CarPlay (owner 2026-10-28; PLAN.md, ATS support), each on its own
+/// screen once WestPlay draws there (`layout` `None` until then: ATS support, phase 4), and the tablet in any other.
+pub const ATS_TRUCKS: &[Truck] = &[
+    Truck { id: "volvo-vnl-2018", name: "Volvo VNL (2018)", source: Source::Game("volvo.vnl2018"), layout: None },
+    Truck { id: "volvo-vnl-2025", name: "Volvo VNL (2025)", source: Source::Game("volvo.vnl2025"), layout: None },
+    Truck { id: "volvo-vnr-electric", name: "Volvo VNR Electric", source: Source::Game("volvo.vnr_e"), layout: None },
+    Truck {
+        id: "freightliner-cascadia-2019",
+        name: "Freightliner Cascadia (2019) - digital dash",
+        source: Source::Game("freightliner.cascadia2019"),
+        layout: None,
+    },
+    Truck {
+        id: "freightliner-cascadia-2024",
+        name: "Freightliner Cascadia (2024) - digital dash",
+        source: Source::Game("freightliner.cascadia2024"),
+        layout: None,
+    },
+    Truck {
+        id: "kenworth-t680-2022",
+        name: "Kenworth T680 (2022)",
+        source: Source::Game("kenworth.t680_2022"),
+        layout: None,
+    },
+    Truck { id: "western-star-57x", name: "Western Star 57X", source: Source::Game("westernstar.57x"), layout: None },
+    Truck { id: "western-star-49x", name: "Western Star 49X", source: Source::Game("westernstar.49x"), layout: None },
+    Truck { id: "mack-anthem", name: "Mack Anthem", source: Source::Game("mack.anthem"), layout: None },
+    Truck { id: "mack-pinnacle", name: "Mack Pinnacle", source: Source::Game("mack.pinnacle"), layout: None },
+    Truck { id: "peterbilt-579", name: "Peterbilt 579", source: Source::Game("peterbilt.579"), layout: None },
+    Truck {
+        id: "any-truck-tablet",
+        name: "Any truck – with the WestPlay tablet",
+        source: Source::Any,
+        layout: Some("tablet"),
+    },
+];
+
+/// The trucks WestPlay is made for in the game `kind`.
+pub fn trucks(kind: Kind) -> &'static [Truck] {
+    match kind {
+        Kind::Ets2 => TRUCKS,
+        Kind::Ats => ATS_TRUCKS,
+    }
+}
 
 /// Whether a player can have WestPlay in a truck.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -133,15 +196,22 @@ pub enum Fit {
     NotYet,
 }
 
-/// Each truck WestPlay is made for, in `files` (the game), with the layouts its mod patched there
-/// (`patched`); a mod's truck by the player's profiles' mods and the mods installed (`installed`:
+/// Each truck WestPlay is made for in the game `kind`, in `files` (the game), with the layouts its mod patched
+/// there (`patched`); a mod's truck by the player's profiles' mods and the mods installed (`installed`:
 /// `profiles::installed`), active or not.
-pub fn fit(files: &GameFiles, patched: &[&str], profiles: &[Profile], installed: &[String]) -> Vec<(Truck, Fit)> {
-    TRUCKS
+pub fn fit(
+    kind: Kind,
+    files: &GameFiles,
+    patched: &[&str],
+    profiles: &[Profile],
+    installed: &[String],
+) -> Vec<(Truck, Fit)> {
+    trucks(kind)
         .iter()
         .map(|truck| {
             let in_game = match truck.source {
                 Source::Game(id) => files.read(&format!("def/vehicle/truck/{id}/data.sii")).ok().flatten().is_some(),
+                Source::Bus(id) => files.read(&format!("def/vehicle/bus/{id}/data.sii")).ok().flatten().is_some(),
                 Source::Mod(words) => {
                     let has = |named: &str| {
                         let named = named.to_lowercase();
@@ -181,7 +251,7 @@ mod tests {
     }
 
     fn profile_with(mods: &[(&str, &str)]) -> Profile {
-        let mut profile = Profile::new_player();
+        let mut profile = Profile::new_player(crate::game::Kind::Ets2);
         profile.mods = mods
             .iter()
             .map(|(package, name)| Mod {
@@ -198,10 +268,29 @@ mod tests {
     }
 
     #[test]
+    fn a_bus_is_found_among_the_games_buses() {
+        let root = std::env::temp_dir().join(format!("westplay-trucks-buses-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let dir = root.join("def/vehicle/bus/scania.touring_23");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("data.sii"), "SiiNunit
+{
+}
+").unwrap();
+        let files = GameFiles::new(vec![Mount::Folder(root.clone())]);
+        let fits = fit(Kind::Ets2, &files, &["scania-touring", "man-lions-24"], &[], &[]);
+        let _ = std::fs::remove_dir_all(&root);
+        let of = |id: &str| fits.iter().find(|(truck, _)| truck.id == id).unwrap().1;
+        // The Coaches DLC's Scania Touring, among the buses (not the trucks); its MAN not in this game.
+        assert_eq!(of("scania-touring"), Fit::Ready);
+        assert_eq!(of("man-lions-coach-2024"), Fit::NotInGame);
+    }
+
+    #[test]
     fn tells_which_trucks_a_player_can_have_westplay_in() {
         let (files, root) = game_with(&["daf.2021", "scania.s_2016", "iveco.sway"]);
         let profiles = [profile_with(&[("Jaspers_DAF_2021_v1.2", "DAF 2021 Jasper")])];
-        let fits = fit(&files, &["generic", "daf-2021"], &profiles, &[]);
+        let fits = fit(Kind::Ets2, &files, &["generic", "daf-2021"], &profiles, &[]);
         let of = |name: &str| fits.iter().find(|(truck, _)| truck.name.starts_with(name)).unwrap().1;
         assert_eq!(of("DAF XF"), Fit::Ready);
         assert_eq!(of("Jasper"), Fit::Ready);
@@ -210,16 +299,20 @@ mod tests {
         assert_eq!(of("Scania S and R - Smart Dash"), Fit::NotYet);
         // Its scripts weren't patched (the DLC's not in this game's files).
         assert_eq!(of("Iveco"), Fit::NotYet);
-        let with_sway = fit(&files, &["iveco-sway"], &profiles, &[]);
+        let with_sway = fit(Kind::Ets2, &files, &["iveco-sway"], &profiles, &[]);
         assert_eq!(with_sway.iter().find(|(truck, _)| truck.name.starts_with("Iveco")).unwrap().1, Fit::Ready);
         // Not in the game.
         assert_eq!(of("Renault"), Fit::NotInGame);
         // Any truck with the tablet: in every game, once the mod has it.
         assert_eq!(of("Any truck"), Fit::NotYet);
-        let with_tablet = fit(&files, &["tablet"], &profiles, &[]);
+        let with_tablet = fit(Kind::Ets2, &files, &["tablet"], &profiles, &[]);
         assert_eq!(with_tablet.iter().find(|(truck, _)| truck.name.starts_with("Any truck")).unwrap().1, Fit::Ready);
         let jasper = |installed: &[String]| {
-            fit(&files, &["daf-2021"], &[], installed).iter().find(|(t, _)| t.name.starts_with("Jasper")).unwrap().1
+            fit(Kind::Ets2, &files, &["daf-2021"], &[], installed)
+                .iter()
+                .find(|(t, _)| t.name.starts_with("Jasper"))
+                .unwrap()
+                .1
         };
         // Neither installed nor in a profile.
         assert_eq!(jasper(&[]), Fit::NotInGame);
@@ -227,6 +320,21 @@ mod tests {
         assert_eq!(jasper(&["Jaspers_DAF_2021_v1.2".into()]), Fit::Ready);
         // A Workshop item, by its manifest's name.
         assert_eq!(jasper(&["DAF 2021 by Jasper".into()]), Fit::Ready);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn atss_trucks_are_its_own_their_screens_not_yet() {
+        let (files, root) = game_with(&["volvo.vnl2018", "mack.anthem"]);
+        // The stock screen patched (as ATS's mod has it): the trucks on it still not WestPlay's there.
+        let fits = fit(Kind::Ats, &files, &["generic", "tablet"], &[], &[]);
+        let of = |id: &str| fits.iter().find(|(truck, _)| truck.id == id).unwrap().1;
+        assert_eq!(of("volvo-vnl-2018"), Fit::NotYet);
+        assert_eq!(of("mack-anthem"), Fit::NotYet);
+        assert_eq!(of("peterbilt-579"), Fit::NotInGame);
+        assert_eq!(of("any-truck-tablet"), Fit::Ready);
+        // None of ETS2's.
+        assert!(fits.iter().all(|(truck, _)| !truck.id.starts_with("daf-")));
         let _ = std::fs::remove_dir_all(&root);
     }
 }

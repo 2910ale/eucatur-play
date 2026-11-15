@@ -3,6 +3,220 @@
 What changed in each release of WestPlay. The newest release's notes are what the app shows when it offers the
 update.
 
+## 2.4.0 (2026-11-13)
+- The Coaches DLC: WestPlay on the screens of the Scania Touring and the MAN Lion's Coach, shaped to each and drawn
+  sharp. The game's parking camera shows over WestPlay, as on the game's own screen, and WestPlay under it takes no
+  clicks while it shows. The Volvo 9700 keeps the game's navigation (its real one has no CarPlay); the WestPlay tablet
+  in its dashboard shows WestPlay.
+- The coaches play through their own speakers, from the moment you get in: the MAN Lion's Coach and the Scania
+  Touring (both lengths each) and the Volvo 9700. The driver's pair, or every speaker over the passengers' seats,
+  heard from the driver's seat: a choice in the companion (Truck Screen › Coach speakers), greyed out in a truck. In a
+  coach it says how many speakers that coach's passengers' set plays at once, which a weak processor can feel.
+- The screen's brightness on keys: Alt+4 darker, Alt+5 brighter (with WestPlay's key), shown at the top of the screen
+  as the volume is. Both can be changed in the companion's Controls; a key you had already put another keybind on
+  stays yours.
+- Holding Volume up or Volume down changes the song after one second (it took two).
+- The sidebar laid out as CarPlay's: its apps in the very middle of it on every screen, the clock at the top, the truck
+  and Home/Dashboard buttons together at the bottom (a gap of most of a button stood between the two). Its buttons are
+  larger, about half an app icon as on CarPlay (the tablet's stay as they were). The Scania 7" shows three apps (it
+  had two).
+- The map's speed limit sign keeps its figures inside its red ring at every Text Size, three-digit limits too (they
+  grew with the Text Size and ran through the ring).
+- Swiping the Home screen's pages no longer sticks when the mouse is let go at the screen's edge.
+- Maps (and the Dashboard's map) move smoothly at 60 frames a second on every display: on displays faster than 60 Hz
+  the game was handed as few as 45 new map frames a second (36 at 144 Hz), the map holding still up to 40 ms at a
+  time, "moving like steps" whatever the graphics card. The map is now drawn evenly, so each of the 60 frames a second
+  the game takes is a new one.
+- Through every toll plaza and border crossing the route runs through the booth or gate the game's route drives
+  through, wherever it stands: on many it ran straight through between the booths (south of Innsbruck), and where
+  a booth or gate stood off the plaza's middle, beside it. On ETS2's map the line now passes through the booth on
+  all 449 ways through toll plazas (252 before) and the gate on all 181 through border crossings (95 before).
+- The game no longer crashes a while after it starts when the Steam overlay's code is in it (even switched off in Steam)
+  and something makes another swap chain, as Trucky's app does as it connects: where the overlay had hooked the
+  game's picture before WestPlay, the two called each other round until the game's stack ran out. WestPlay now leaves
+  the overlay nothing to hook again.
+- WestPlay starts its cab's browser again if it doesn't start the first time (up to three tries), instead of stopping
+  with "WestPlay engine stopped: … the timeout period expired". When it does stop, app.log now says why.
+- Every map is prepared again once with this update.
+- A map with a map mod made of older models (Oyuncuyusbis map) no longer fails to prepare: an older model's parts
+  were read as the game's current ones, and the build asked for 13 GB at once. Models in the game's three older
+  formats are now read as they are, so their buildings, stations and roads are on the map too (on the Oyuncuyusbis
+  map, 702 of its 4,523 models).
+- Map mods whose definitions are written scrambled, encrypted or binary (as the game reads them) are read: their
+  roads' looks, junctions and water were left out without a word. Whatever still can't be read is named in app.log.
+- A map mod with damaged map files is left out and named, instead of the whole map failing to prepare or the
+  preparation sitting still (a zip cut short, damaged sectors, junctions or models, a road of impossible length,
+  ground placed nowhere; where a mod's sector doesn't fit the game's own, that mod is left out). A damaged or
+  protected archive can no longer make a preparation ask for gigabytes at once ("memory allocation of … bytes
+  failed").
+- A map whose parts lie far apart (map mods across the world's oceans, or a DLC far from the rest: one player's
+  spans 1,561 x 1,389 km) no longer needs tens of gigabytes of memory, or hundreds of thousands of files of open
+  sea on disk, and its sea comes out right. Small lakes and islands far from the map's middle are drawn the right
+  way (a lake could come out as land, an island as a hole).
+- Prepare Maps Faster no longer runs out of memory on PCs where other programs use a good part of it (a laptop of
+  16 GB failed with "memory allocation ... failed"): it now counts everything the PC uses. Preparing a map also
+  takes less memory and less time on its own.
+- Starting the game while a map is being prepared stops the preparation, and the companion says so: it went on
+  under the game, taking the PC's memory and processor from it. It starts again from the beginning once the game
+  is closed.
+- The map bar moves the whole way through, at the pace the work really goes ("stuck at 92%" for minutes), and gives
+  each map an equal share however many profiles play it.
+- A map that fails ends with what went wrong, and the next profile's map is prepared: it could sit still at a
+  percentage for ever. A failed map says the fault itself, not "a scoped thread panicked", and one that couldn't
+  get the memory it needed says how much it asked for.
+- A preparation that's stopped or fails no longer leaves gigabytes of unfinished files behind.
+- Maps prepared by an older WestPlay are prepared again when the map builder changes: a map prepared by 2.2.0 that
+  left no mod out was taken as up to date, so ATS's start at San Francisco (2.2.1) never reached it.
+
+## 2.3.0 (2026-11-11)
+- Safari: the web in the cab, in iPad Safari's look (iPadOS 26). Tabs in a tab bar of their own, or Compact, in the
+  toolbar (Settings › Safari › Tabs); the bars take the colour of the page's top as it changes; the tab overview,
+  History, the Start Page with your most visited sites, and the page menu's text size. What you type is a website or
+  a search with the search engine you pick (Google, Yahoo, Bing, DuckDuckGo or Ecosia). Every website opens as its
+  mobile site, laid out at Safari's width, and follows WestPlay's light and dark appearance. Sites keep you signed in
+  (Google as YouTube and YouTube Music are), your open tabs and history are there next time, and Clear History clears
+  the last hour, today, today and yesterday or all of it. Drag a page to scroll it as a finger does; a website's
+  drop-down list opens in Safari's own menu; the cab's keyboard and your own type into a site's fields. A page's
+  sound plays through the truck's speakers and pauses with the game, as the music apps do. Cloudflare's and other
+  sites' "are you human" checks pass. No downloads, and nothing a page asks for (camera, location, notifications).
+- Brightness, in Settings › Appearance: a slider between a small and a large sun, as iOS's. It turns down the light
+  the screen gives off, the whole screen together (a video playing and the cursor too), not a dark layer over it.
+- Through a toll plaza the route runs where the game sends a truck: through the trucks' booth, often off to the
+  right, not straight through the cars' booths. Each plaza says which booths trucks may use, per direction, so some
+  routes still go straight through. A weigh station's scale is passed by where there's another way (the plazas at
+  Edirne and Istanbul): it calls a truck in only now and then, and you then drive off the route into it.
+- Home has two rows of apps at most, as CarPlay's, the rest on the next page (the Scania Smart Dash had three). Its
+  pages always move on to the page a drag settles on, from wherever it's let go: let go part of the way, they jumped.
+- The sidebar's Dashboard button is CarPlay's: one rounded square, as large as the Home button's app grid. The
+  sidebar's fourth app (on screens with room for it) is Calendar, Weather, Settings or Safari, whichever you used
+  last.
+- The tablet: no truck button (it's no truck's screen, so there was no way back), its sidebar's app icons a quarter
+  larger and its Home button twice the size (they were smaller than a finger), and its screen less bright by day
+  (it was far too bright).
+- The cursor goes dark over anything light and light over anything dark, from what's on the screen under it: a web
+  page, a video, a picture, the truck's own screen (it went by what the app said, and was often wrong).
+- The keyboard's corners follow the screen's, and it rises over what's on the screen and slides away smoothly:
+  nothing moves or changes size for it (a field low on the page scrolls up into sight). Typing on your own keyboard
+  no longer pops each letter up over its key.
+- A video playing on the Dashboard goes with its card as the map grows over the widgets (its picture stayed over
+  the map), and shows again once the card is back.
+- A map that fails to prepare says why: the companion showed only Rust's "note: run with `RUST_BACKTRACE=1`…" line,
+  never the reason above it.
+- WestPlay works with OptiScaler, Snowy Moon's TAA/DLSS and lighting mods, RivaTuner, the Steam overlay and other
+  tools that wrap or hook the game's picture: the game crashed on its first frame with OptiScaler, and with Snowy
+  Moon's mods or RivaTuner the truck's screen stayed black. WestPlay finds what to hook with a small program of its
+  own outside the game (westplay-probe.exe, beside the plugin), hooks in front of those tools without changing any of
+  their code, and hooks again should another tool write over its hook (RivaTuner's overlay still shows).
+- An American Truck Simulator folder with ETS2's program copied into it is taken for ATS: setup didn't show it, and
+  chosen by hand it was set up as ETS2.
+- When WestPlay's engine starts again (the cab moved to another graphics card), what the one before ran stops with
+  it: the same map was prepared twice at once, and the game's weather and route read twice.
+- When the game crashes, plugin.log says which error ended it and the calls that led to it, and whose code each of
+  WestPlay's hooks went into: a crash with an upscaler or another tool in the game can now be found from the log.
+
+## 2.2.2 (2026-11-06)
+- Prepare Maps Faster, for strong PCs: a switch on the companion's Map page, and a step of its own before WestPlay
+  is installed, off unless you turn it on (and tick that you've read what it does). It prepares the maps with every
+  thread of the processor and up to four fifths of the memory, in a map builder of its own with a faster way of
+  taking memory: ETS2's map in about two minutes on a 16-core PC, where it took over five.
+- Each map is prepared in a process of its own: a map that fails to prepare no longer takes WestPlay down with it.
+- No map stops preparing for the memory it takes any more: a very large map mod (or several) stopped at three
+  fifths of the PC's memory (19.2 GB with 32 GB) and was left out.
+- Prepare Maps Again asks which maps to prepare: all of them, or the ones you pick.
+- Preparing a map is faster on every PC, and takes less memory at the most: the buildings are placed on every
+  thread, and a junction shaped the same as one already worked out isn't worked out again.
+- Tablet: the music is no longer muffled when you look away from the tablet in the newer American trucks'
+  interiors (the Volvo VNL 2025's, the Kenworth T680 2022's, the Freightliner Cascadia 2024's), nor when a mod
+  changing a truck's dashboard is installed but active in none of your profiles.
+- The Dashboard's map grows and shrinks smoothly: it moved at a stutter, the map drawn again at a new size each
+  step of the way.
+- When WestPlay or the game's plugin crashes, its log says what happened and where, and app.log keeps the run
+  before as app.old.log and starts with WestPlay's version; setting WestPlay up writes each of its steps there:
+  a crash on a player's PC can now be found from their logs.
+
+## 2.2.1 (2026-11-05)
+- Preparing a map takes less than half the memory it did, the same map coming out (ETS2's about 5.5 GB at the most
+  where it was 12, ATS's under 3 where it was over 7): the roads' and junctions' shapes were kept three times over
+  while it was drawn, the parts in the air copied once more for each piece of the map, and the densest pieces (the
+  cities) all drawn at once. It takes a little longer.
+- With no truck to follow (the companion's screen, the cab before you drive), ATS's map starts at San Francisco: it
+  started in the middle of the states you own, which can be empty desert, and the companion's screen showed nothing.
+  Every map is prepared again once after the update.
+- Adding an icon set or wallpapers in the companion reads only the files it takes, and none past its size limit: a
+  folder or a .zip with other big files in it (a video, a zip that unpacks to gigabytes) made WestPlay read them all
+  into memory first (reported by kocaemre).
+
+## 2.2.0 (2026-11-04)
+- WestPlay comes to American Truck Simulator, next to Euro Truck Simulator 2: one WestPlay for both. The companion
+  finds both games and sets WestPlay up in each in one go; its setup, map and update steps show each game. In ATS,
+  WestPlay is on the tablet in every truck; the trucks whose real counterparts have CarPlay get WestPlay on their own
+  screens later. ATS's map has only the states you own, its landmarks (the Strip's casinos, the Golden Gate, St
+  Louis's arch, the downtowns), and zoomed out it goes on into the game's own picture of North America. Go, Add
+  Stop and alternative routes work on ATS 1.62, and WestPlay finds the game's GPS in the game's own code, so an
+  update that moves it doesn't break them.
+- New on Home: Player, for the songs you put in the game's own music folder (Documents › Euro Truck Simulator 2 ›
+  music, or American Truck Simulator's): all of them in one list, Play and Shuffle, Now Playing with shuffle,
+  repeat and a volume bar, played through the truck's speakers as the other music apps are. A song without tags
+  shows its file's name, and songs added to the folder show up as you add them. Player takes the sidebar's music
+  place when you use it, shows on the Dashboard's Now Playing, and pauses with the game and when another app plays.
+- WestPlay speaks your language on the truck's screen: the cab is in all 43 of the game's languages, not only
+  English and Turkish, each saying things the way its players do, with the game's own words for the truck and its
+  places. YouTube and YouTube Music answer in it too, and Apple Music names its Library's sorts in it. You can
+  choose WestPlay's language in the companion (Setup › Language), over the game's own; place names on the map stay
+  in the game's language. The companion's translations are written anew in every language.
+- The on-screen keyboard has each language's own letters, laid out as on the iPhone: German's QWERTZ, French's
+  AZERTY, the Nordic, Baltic and Central European letters, Greek, Cyrillic and Georgian. Korean's letters join into
+  syllables as you type, and Japanese is typed in romaji that turns into kana. The globe key switches to English and
+  back. Chinese and Vietnamese type Latin letters for now.
+- Speeds and distances follow your profile's units (Options › Regional settings): with miles, the speed, the speed
+  limit, the trip, turn-by-turn and search show mph, miles and feet.
+- CarPlay's screen has its black rounded corners, as in a real car, round the sidebar at the same gap all the way, on
+  every truck's screen. The Dashboard's widgets and map, the apps' windows and the keyboard round their corners as
+  the sidebar does, the margin round CarPlay is smaller and the same on every screen, and the apps keep their buttons
+  clear of the corners. The cursor goes under the corners, never over them.
+- WestPlay fits each truck's screen as it really is, laid out to its shape instead of stretched onto it: it was drawn
+  8% too narrow on the Scania Smart Dash, and a little out of shape on the Smart Dash Advanced, Volvo FH, Iveco S-Way
+  and the tablet. Nothing is cut off at the screen's edges any more on the DAF, Iveco, Renault T and Volvo FH, and
+  the bottom of the screen is no longer smeared. The coaches' screens are shown in their exact shape too.
+- The sidebar works as CarPlay's: one app of each kind, the one you used last: Maps, then your music app, then
+  Phone or Messages, and the Calendar where the screen has room.
+- New on Home: Calendar, in Apple's look, its icon showing the day; and Phone and Messages, which aren't ready yet
+  and say so.
+- Driving at 30 km/h or more without touching the screen for 30 seconds, the Dashboard's map grows to fill it, the
+  widgets sliding away; touch the screen or slow down and they come back. It can be turned off in Settings ›
+  Dashboard.
+- Hold Volume up for two seconds to skip to the next song, Volume down to go back. A short press still changes the
+  volume.
+- WestPlay's keys (Alt+1, Alt+2, Alt+3 or your own) are kept from the game from the moment you press them until you
+  let go, also where the game reads the keyboard through DirectInput: there, Alt+1 and Alt+2 also switched the
+  game's camera out of the cab.
+- A new map, drawn from the game's own roads and junctions: intersections and bridges stand at their real heights,
+  flyovers and interchange ramps rising over the roads under them and bridges over the sea and wide rivers as high
+  as they are in the game, the route, your truck and the destination flag going up with them. The 3D buildings have
+  their real shapes (pitched roofs, towers, domes, a stadium's bowl), from the game's own models. The companion's
+  Map page has switches for the 3D roads and the 3D buildings; with the buildings off they lie flat in their shapes.
+  The map is prepared again once, and takes more room.
+- The map keeps its roads and yards as you zoom out, the streets the game leaves off its own map included, with a
+  no-entry sign at their entrance. A filling station shows its road and forecourt, a tunnel stays a tunnel through
+  its junctions, and the grass round junctions no longer shows as road.
+- The route line runs on your side of the road: on any road without a wide central reservation it ran down the
+  middle, and took your truck's mark there with it.
+- Maps' search opens without the keyboard, its panel reaching down the map; the keyboard comes up when you press the
+  search field, and the panel stops just above it on every screen. Find nearby's labels keep long words whole on
+  small screens.
+- On TruckersMP, WestPlay finds the server you're really on: it took most players to be on Simulation 1, its other
+  players and traffic with it. On TruckersMP's ProMods servers the map is ProMods', kept beside the other servers'
+  map. The TruckersMP map is no longer prepared again every time you quit the game.
+- WestPlay shows on Oyuncuyusbis' coaches' screens again: their new versions scramble their files, which WestPlay
+  couldn't read.
+- The game could crash as it started, while WestPlay set itself up in it: WestPlay read a graphics object it had
+  just let go of.
+- Preparing a map takes half of your processor, never all of it, and the companion holds still behind the game on
+  every PC, taking no processor time from it.
+- The setup's last screen has its third step again: hitting the road, after starting the game and getting in the
+  truck.
+- The companion's YouTube and Discord buttons have Patreon beside them.
+
 ## 2.1.4 (2026-10-28)
 - The cursor on WestPlay's screen stays where you left it when you let go of the interaction key, and fades away
   five seconds after you last moved it, as it does when you stop moving it: it went the moment you let go.

@@ -1,5 +1,5 @@
 import { GuidanceCard } from '../maps/GuidanceCard'
-import { speedKmh } from '../../shared/format'
+import { roadSpeed } from '../../shared/format'
 import { go, useLive } from '../state/store'
 import { useAnyWidget } from './widgetState'
 import { DestinationWidget, NowPlayingWidget, WeatherWidget } from './widgets'
@@ -30,8 +30,8 @@ export function Dashboard() {
 
 /** The Dashboard's big tile: the speed, the road's limit, and the button that opens the Eucatur tablet's GPS. */
 function EucaturGpsTile() {
-  const speed = useLive((state) => (state.telemetry ? Math.round(speedKmh(state.telemetry.speed)) : 0))
-  const limit = useLive((state) => (state.telemetry ? Math.round(speedKmh(state.telemetry.navigationSpeedLimit)) : 0))
+  const speed = useLive((state) => (state.telemetry ? roadSpeed(state.telemetry.speed) : 0))
+  const limit = useLive((state) => (state.telemetry ? roadSpeed(state.telemetry.navigationSpeedLimit) : 0))
   return (
     <button type="button" className="eucatur-gps-tile" onClick={() => go({ type: 'openApp', app: 'eucatur' })}>
       <svg className="eucatur-gps-glyph" viewBox="0 0 24 24" aria-hidden>

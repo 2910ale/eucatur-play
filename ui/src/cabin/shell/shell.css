@@ -32,17 +32,33 @@
     1
   );
   --motion-duration: 650ms;
-  /* Outer margin: the DAF screen crops the image edge slightly. */
-  --edge: 32px;
-  /* Every panel's corners, the same (owner 2026-10-27: "make it consistent", the widgets' looked right): the
-     sidebar, the widgets, the map, the apps' windows, the keyboard. A short screen's are smaller (below). */
-  --panel-radius: 30px;
+  /* The margin round CarPlay, the same on every screen (owner 2026-11-03: "make it 16"; it was 32, for the DAF's
+     screen cropping the image's edge a little). */
+  --edge: 16px;
+  /* Every panel's corners, the sidebar's (owner 2026-11-03: "all radiuses must be the same with sidebar", the
+     main UI's; inside the apps their own): the widgets, the map, the apps' windows, the keyboard. */
+  --panel-radius: var(--sidebar-radius);
+  /* The screen's black corners are its panels' round corners the margin further out (.screen-corners), so a thing
+     in a panel's corner is clear of the black by the margin only while it's inside the panel's round corner: a
+     shape of radius r sits at least (panel radius - r) times this in from both of the corner's sides
+     (1 - 1/sqrt(2)), or further in from one where it's nearer the other (owner 2026-11-04: things too close to,
+     and under, the black corners). */
+  --corner-inset: 0.2929;
   /* The sidebar's clock and signal at one size, whatever the Text Size (owner 2026-10-26: following it broke CarPlay's
      look): the size they had at the default Text Size, 1.24. The sidebar as wide as the clock needs (118 units at 1,
      the clock 89 of them), and the screens starting after it and a gap. */
   --sidebar-scale: 1.24;
   --sidebar-width: calc(118px + 89px * (var(--sidebar-scale) - 1));
-  --content-left: calc(var(--edge) + var(--sidebar-width) + 20px);
+  --content-left: calc(var(--edge) + var(--sidebar-width) + var(--tile-gap));
+  /* The gap between panels (the sidebar and the screens, the map and the widgets, widget and widget), the margin's
+     (owner 2026-11-03). */
+  --tile-gap: var(--edge);
+  /* Where the keyboard sits (keyboard.css): its height and how far above the screen's bottom, for what makes
+     room for it (Maps' search, maps.css). A short screen's are its own (below). */
+  --keyboard-height: 336px;
+  /* Its margin inside the app area (keyboard.css: its corners follow the panel's). */
+  --keyboard-margin: 16px;
+  --keyboard-bottom: calc(var(--edge) + var(--keyboard-margin));
   /* The sidebar's corners: just short of half its width. */
   --sidebar-radius: calc(var(--sidebar-width) * 0.45);
   /* Apple-style shadows: a faint contact shadow hugging the edge plus a wide, light ambient one; never one
@@ -193,6 +209,20 @@ body,
     visibility 0s;
 }
 
+/* The shadows of what's drawn over Safari's page, on the page where it shows through (Shell.tsx): placed as the
+   CarPlay area is, over it, shown in the cut alone. An outer shadow is drawn only outside its box: never over what
+   casts it. */
+.page-shadows {
+  position: absolute;
+  inset: 0 0 var(--oem-bottom, 0px) var(--oem-left, 0px);
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.page-shadows > div {
+  position: absolute;
+}
+
 /* Handed to the truck: CarPlay shrinks into WestPlay's button (its transform origin, Shell.tsx), staying
    visible most of the way and fading only as it reaches the button, so it flows into it; the truck's own
    screen shows. Hidden once small, so the screen underneath is the truck's alone. */
@@ -261,6 +291,30 @@ body,
   container: carplay / size;
 }
 
+/* The CarPlay area's own corners, black and round as real CarPlay's (owner 2026-11-03): round the sidebar at the
+   gap it keeps from the edges, the same all the way round, on any screen (its corners' radius and the margin).
+   Over everything in the CarPlay area but the cursor; black in either appearance, as the car's screen is. */
+.screen-corners {
+  --screen-radius: calc(var(--sidebar-radius) + var(--edge));
+  /* Each corner a square of black with a quarter circle taken out of it, within the element's own box: drawn
+     outside it (a shadow round a rounded box), the corners spilled past the CarPlay area in the screen changes'
+     snapshots (which keep an element's shadow but not its parent's clip). The circle's edge softened by a pixel. */
+  --corner: transparent calc(var(--screen-radius) - 1px), #000 var(--screen-radius);
+  position: absolute;
+  inset: 0;
+  z-index: 35;
+  pointer-events: none;
+  background:
+    radial-gradient(circle at 100% 100%, var(--corner)) top left / var(--screen-radius) var(--screen-radius)
+      no-repeat,
+    radial-gradient(circle at 0 100%, var(--corner)) top right / var(--screen-radius) var(--screen-radius) no-repeat,
+    radial-gradient(circle at 100% 0, var(--corner)) bottom left / var(--screen-radius) var(--screen-radius)
+      no-repeat,
+    radial-gradient(circle at 0 0, var(--corner)) bottom right / var(--screen-radius) var(--screen-radius) no-repeat;
+  /* Over the screen changes' snapshots too, unmoving (transitions.css). */
+  view-transition-name: screen-corners;
+}
+
 /* Browser previews only: where the game draws the truck's own strip. */
 .game-strip-preview {
   position: absolute;
@@ -299,18 +353,38 @@ body,
   top: var(--edge);
   bottom: var(--edge);
   width: var(--sidebar-width);
-  /* Almost a pill, like CarPlay's sidebar: the one panel not at --panel-radius (owner 2026-10-28: the 30 px
-     looked rectangular on it). The clock and the buttons kept clear of the round ends. */
+  /* Almost a pill, like CarPlay's sidebar (owner 2026-10-28: 30 px looked rectangular on it), and every other
+     panel's since (--panel-radius). The clock and the buttons kept clear of the round ends. */
   border-radius: var(--sidebar-radius);
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: space-between;
-  padding: 40px 0 38px;
+  /* The clock at the top, the truck and Home buttons at the bottom, and the apps in the middle of the whole sidebar,
+     always (owner 2026-11-13: "always, at all times, with no exception", as CarPlay's: reference/carplay-photos, its
+     apps' middle the sidebar's): rows above and below them of the same height. Where the clock or the buttons need
+     more than half the rest the apps move rather than cover them: a short sidebar's gaps are set to keep them in the
+     middle (its profile's `sidebarGaps`). */
+  display: grid;
+  grid-template-rows: 1fr auto 1fr;
+  justify-items: center;
+  /* Between the apps: a screen with little room for them tighter (--screen-app-gap). */
+  --sidebar-app-gap: var(--screen-app-gap, 18px);
+  /* The Home symbol as drawn this far from the bottom: where it was with its first, square button (38 below its box
+     of 64, the symbol 34 * 2/3 in its middle); a short sidebar's nearer (--screen-home-bottom). */
+  --sidebar-home-bottom: var(--screen-home-bottom, 58.67px);
+  /* The truck and Home buttons one group: each as tall as its symbol as drawn (the middle 2/3 of its box,
+     Sidebar.tsx; the truck's 24 units at a button scale of 1) and the gap between their symbols (owner 2026-11-13:
+     square buttons left a gap of most of a button between them; at the apps' gap they looked one symbol). A short
+     sidebar's closer (--screen-button-gap), where the apps in its middle would otherwise reach the truck. */
+  --sidebar-button-gap: var(--screen-button-gap, 36px);
+  /* The buttons' symbols' size, against their first: the screen's button size (--sidebar-button-scale). */
+  --sidebar-symbols: var(--sidebar-button-scale, 1);
+  --sidebar-button-height: calc(24px * var(--sidebar-symbols) + var(--sidebar-button-gap));
+  /* The clock this far from the top. */
+  --sidebar-top: 40px;
   z-index: 1;
 }
 
 .status {
+  align-self: start;
+  margin-top: var(--sidebar-top);
   text-align: center;
 }
 
@@ -335,14 +409,14 @@ body,
 .recent {
   display: flex;
   flex-direction: column;
-  gap: 18px;
+  gap: var(--sidebar-app-gap);
 }
 
 /* Like CarPlay, the app on screen isn't boxed: it's simply the top one (navigation puts it there). Pressing an
    icon shrinks it a little, like iOS. */
 .recent button {
   display: block;
-  border-radius: 20px;
+  border-radius: calc(20px * var(--sidebar-icon-scale, 1));
   transition: scale 160ms var(--motion-ease);
 }
 
@@ -362,30 +436,45 @@ body,
 
 .recent img {
   display: block;
-  width: 74px;
-  height: 74px;
+  width: calc(74px * var(--sidebar-icon-scale, 1));
+  height: calc(74px * var(--sidebar-icon-scale, 1));
   filter: var(--shadow-icon);
 }
 
 /* The truck and Home buttons at the bottom of the sidebar. */
 .sidebar-actions {
+  align-self: end;
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 4px;
+  /* The Home symbol --sidebar-home-bottom from the bottom: its button's box reaches below it by half what it adds. */
+  margin-bottom: calc(
+    var(--sidebar-home-bottom) - (var(--sidebar-button-height) - 34px * 2 / 3 * var(--sidebar-symbols)) / 2
+  );
 }
 
 .sidebar-button {
   display: grid;
   place-items: center;
-  width: 64px;
-  height: 64px;
+  width: calc(64px * var(--sidebar-button-scale, 1));
+  height: var(--sidebar-button-height);
   border-radius: 50%;
   transition: scale 160ms var(--motion-ease);
 }
 
 .shell .sidebar-button:active {
   scale: 0.92;
+}
+
+/* The buttons' symbols, larger with them (--sidebar-symbols). */
+.home-button svg {
+  width: calc(34px * var(--sidebar-symbols));
+  height: calc(34px * var(--sidebar-symbols));
+}
+
+.truck-button svg {
+  width: calc(36px * var(--sidebar-symbols));
+  height: calc(36px * var(--sidebar-symbols));
 }
 
 /* The Home button's two icons share its place; the one for where it goes shows. */
@@ -466,22 +555,33 @@ body,
    others are 700 and more): smaller icons and buttons in the sidebar, so its three apps and both buttons fit
    in its height. */
 @container carplay (max-height: 520px) {
-  /* Margins and gaps don't grow with the UI: smaller ones, and a slimmer sidebar, so the content keeps the
-     room (the sidebar's edge, its width and a gap: where the screens start, `--content-left`). */
+  /* A slimmer sidebar, so the content keeps the room (the sidebar's edge, its width and a gap: where the screens
+     start, `--content-left`). The margin and the gaps are every screen's. */
   .sidebar,
   .screen-slot,
-  .keyboard {
-    --edge: 14px;
-    --tile-gap: 10px;
-    --panel-radius: 22px;
+  .keyboard,
+  .screen-corners {
+    --panel-radius: var(--sidebar-radius);
     /* 96 units at a Text Size of 1, its clock (26 units) 68 of them. */
     --sidebar-width: calc(96px + 68px * (var(--sidebar-scale) - 1));
     --sidebar-radius: calc(var(--sidebar-width) * 0.45);
-    --content-left: calc(var(--edge) + var(--sidebar-width) + 10px);
+    --content-left: calc(var(--edge) + var(--sidebar-width) + var(--tile-gap));
+    /* The keyboard about two thirds as tall, a narrower margin round it (keyboard.css: its corners still follow
+       the panel's, owner 2026-11-07). */
+    --keyboard-height: 230px;
+    --keyboard-margin: 8px;
   }
 
   .sidebar {
-    padding: 22px 0 18px;
+    /* The gaps and the buttons' symbols smaller with the icons (54 units to 74: owner 2026-11-13, the symbols kept at
+       the full screens' size were larger than the icons here). The clock 22 from the top, the Home symbol where it
+       was with its first, square button (18 below its box of 50). */
+    --sidebar-app-gap: var(--screen-app-gap, 10px);
+    --sidebar-home-bottom: var(--screen-home-bottom, 31.67px);
+    --sidebar-button-gap: var(--screen-button-gap, 18px);
+    --sidebar-symbols: calc(var(--sidebar-button-scale, 1) * 54 / 74);
+    --sidebar-button-height: calc(24px * var(--sidebar-symbols) + var(--sidebar-button-gap));
+    --sidebar-top: 22px;
   }
 
   .time {
@@ -493,22 +593,17 @@ body,
     font-size: calc(18px * var(--sidebar-scale));
   }
 
-  .recent {
-    gap: 10px;
-  }
-
   .recent img {
-    width: 54px;
-    height: 54px;
+    width: calc(54px * var(--sidebar-icon-scale, 1));
+    height: calc(54px * var(--sidebar-icon-scale, 1));
   }
 
   .recent button {
-    border-radius: 15px;
+    border-radius: calc(15px * var(--sidebar-icon-scale, 1));
   }
 
   .sidebar-button {
-    width: 50px;
-    height: 50px;
+    width: calc(50px * var(--sidebar-button-scale, 1));
   }
 }
 

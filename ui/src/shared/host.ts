@@ -86,8 +86,10 @@ export interface JobInfo {
   income: number
 }
 
-/** What a keybind does: the music's volume a step up or down, or it paused or played on. */
-export type KeybindAction = 'volumeUp' | 'volumeDown' | 'playPause'
+/** What a keybind does: the music's volume a step up or down, or it paused or played on; or, a volume key held
+ * (two seconds: owner 2026-11-03), the next song or the one before (or the song's start, past its first seconds). */
+export type KeybindAction =
+  'volumeUp' | 'volumeDown' | 'playPause' | 'nextTrack' | 'previousTrack' | 'brightnessDown' | 'brightnessUp'
 
 export type HostMessage =
   | { type: 'telemetry'; data: Telemetry }
@@ -105,11 +107,17 @@ export type HostMessage =
       iconSet?: string | null
       /** Light or dark icons, or as the screen is (`IconStyle`). */
       iconStyle?: string
+      /** Whether the map's buildings rise from it. */
+      buildings?: boolean
+      /** Whether its roads rise to their real heights. */
+      roads?: boolean
       /** The player's own tone curve (Settings › Equalizer), and whether it plays (Custom) or not (Recommended). */
       equalizer?: Equalizer
       equalizerCustom?: boolean
       /** Eucatur Play: the Eucatur warnings shown on the truck's screen over the other apps (default on). */
       eucaturAvisosTela?: boolean
+      /** The language chosen in the companion (a game code, `de_de`); `null`: the game's. */
+      language?: string | null
     }
   /** The player's own wallpapers and icon sets (shared/customize.ts), their files at `CABIN_FILES`. */
   | { type: 'customize'; wallpapers: CustomWallpaper[]; iconSets: IconSet[] }
@@ -125,6 +133,17 @@ export type HostMessage =
   | { type: 'routeAnswer'; id: number; answer: RouteAnswer }
   /** WestPlay's own routes for the page's `routes` request `id` (none: no road graph, or no way there). */
   | { type: 'routes'; id: number; routes: PlannedRoute[] }
+  /** What route `index` offered for the page's `routes` request `id` is drawn from, read from the game's files as the
+   * game's route is (`route` and `routePaths`): its map nodes, `[x, z, forward x, forward z]`, the ways through its
+   * junctions and how far right of its way it runs. Each as it's read: one across the map takes seconds. */
+  | {
+      type: 'offeredWays'
+      id: number
+      index: number
+      nodes: [number, number, number, number][]
+      paths: [number, [number, number][]][]
+      shifts: [number, number][]
+    }
   /** Whether the game's GPS follows the route picked (`follow` request `id`): `answer` "ownWay" when the
    * game takes another way however held, else the game's answer. */
   | { type: 'followed'; id: number; follows: boolean; answer: string }
@@ -139,10 +158,13 @@ export type HostMessage =
   | { type: 'mapBlock'; hvt: boolean; language: string | null }
   /** Whether the player's profile has the game's time zones on (its clock the time where the truck is). */
   | { type: 'timeZones'; on: boolean }
-  /** The game's GPS route: its map nodes in order, `[x, z, forward x, forward z, distance left]` (metres;
+  /** The player's profile's units (its `g_mph`): miles and mph (`true`), or kilometres and km/h; `null` when its
+   * options don't say. */
+  | { type: 'units'; mph: boolean | null }
+  /** The game's GPS route: its map nodes in order, `[x, z, forward x, forward z, distance left, height]` (metres;
    * the road's direction, either way along it; the distance left from the node to the destination, as the
    * game counts distances). `null` without a route. */
-  | { type: 'route'; id: number | null; nodes: [number, number, number, number, number][] | null }
+  | { type: 'route'; id: number | null; nodes: [number, number, number, number, number, number][] | null }
   /** The ways through the route's junctions (the junction's own lanes, from the game's files): each from
    * the node it starts at to the next, as `[x, z]` points; and the turns there, by the same node: the
    * turn (`right`, `exit-left`, `roundabout`…), its angle (degrees, right positive) and a roundabout's
@@ -180,7 +202,8 @@ export type HostMessage =
    * its last telemetry. */
   | { type: 'game'; running: boolean }
   /** Whether the game runs under TruckersMP (the page shows its other players, from TruckersMP's map feed). */
-  | { type: 'truckersmp'; on: boolean }
+  /** Whether the game runs under TruckersMP, and which game it is (`null`: not said yet). */
+  | { type: 'truckersmp'; on: boolean; game?: 'ets2' | 'ats' | null }
   /** Under TruckersMP, the players around the player from its SDK (the plugin's): its game server's id, the
    * player's own number on it, and each other player's number, world x and z (m) and heading (turns); `null`s
    * and none when there are none to tell. */
@@ -213,6 +236,10 @@ export type HostMessage =
   | ({ type: 'appleMusicAnswer'; id: number; failed?: boolean } & Partial<AppleMusicAnswers>)
   /** What Apple Music plays; `null`: nothing. */
   | { type: 'appleMusicPlayback'; playback: AppleMusicPlayback | null }
+  /** The game's music folder (Player): where it is (`null`: the game's folder isn't known) and its songs. */
+  | { type: 'musicFolder'; folder: string | null; songs: PlayerSong[] }
+  /** What Player plays; `null`: nothing. */
+  | { type: 'playerPlayback'; playback: PlayerPlayback | null }
   /** YouTube Music's web player: whether it's signed in and playing (`null`: not running), whether its sign-in
    * window is open on the PC, and the account's picture (Google's). YouTube's sign-in: they share it. */
   | {
@@ -226,6 +253,22 @@ export type HostMessage =
   | ({ type: 'youtubeMusicAnswer'; id: number; failed?: boolean } & Partial<YouTubeMusicAnswers>)
   /** What YouTube Music plays; `null`: nothing. */
   | { type: 'youtubeMusicPlayback'; playback: YouTubeMusicPlayback | null }
+  /** A Safari tab's page as it is now (`westplay_host::safari::TabState`). */
+  | { type: 'safariTab'; tab: number; state: SafariTabState }
+  /** A page opened a new window: a new tab `tab`, after the page's own (`opener`), its page already live. */
+  | { type: 'safariOpened'; tab: number; opener: number }
+  /** A page closed its own window (`window.close()`). */
+  | { type: 'safariClosed'; tab: number }
+  /** A tab's page let go (not live): loaded again from its address when shown. */
+  | { type: 'safariLetGo'; tab: number }
+  /** A page's dialog, waiting for the player's answer (an `answer` command). */
+  | { type: 'safariDialog'; tab: number; dialog: SafariDialog }
+  /** A tab's picture written, at `https://westplay.safari-tabs/tab-<tab>.png` (`version` new with each). */
+  | { type: 'safariPicture'; tab: number; version: number }
+  /** A page tried to download a file (a cab downloads nothing). */
+  | { type: 'safariNoDownload'; tab: number }
+  /** Whether any of Safari's pages plays sound. */
+  | { type: 'safariPlaying'; playing: boolean }
 
 /** The game's weather: the one there is and the one it's turning to (the same once it has); in game minutes,
  * how long until the game changes it next; and how wet the roads are, percent. Each of the last two `null`
@@ -270,6 +313,9 @@ export type PageMessage =
   | { type: 'ready' }
   /** A startup stage reached (the boot screens shown), for the host's startup log. */
   | { type: 'startup'; stage: string }
+  /** The cab's guidance (the next turn it shows and how far), every 30 s while there's a route, for the host's log
+   * (cabin/maps/guidanceLog.ts). */
+  | { type: 'guidance'; line: string }
   /** Whether WestPlay is open on the truck's screen (or the truck's original screen shows): posted as the
    * page connects and whenever it changes, for the companion window. */
   | { type: 'westplay'; open: boolean }
@@ -282,13 +328,20 @@ export type PageMessage =
   | ({ type: 'equalizer'; custom: boolean } & Equalizer)
   /** The music's spectrum wanted (Settings › Equalizer open) or not: the host answers `spectrum` as it plays. */
   | { type: 'spectrum'; on: boolean }
+  /** The screen's brightness, set in Settings › Appearance: the slider's place, 0 to 1. The host scales the light of
+   * the whole frame the game shows with it (crates/host brightness.rs). */
+  | { type: 'brightness'; level: number }
   /** Whether what's under the cursor is light: the host draws it dark there. */
   | { type: 'cursorLight'; light: boolean }
+  /** Where the host's cursor may be seen (page pixels): the CarPlay area, its corners round as its black ones, a
+   * little inside the frame's edge (shell/cursorArea.ts). */
+  | { type: 'cursorArea'; area: { left: number; top: number; right: number; bottom: number; radius: number } }
   /** A change to the game's GPS route (Maps' search), at a map node (its uid, hex) for going or adding a
    * stop; the host answers with `routeAnswer` and the same `id`. */
   | { type: 'route'; id: number; action: RouteAction; node?: string }
-  /** The routes to a map node (its uid, hex) from where the truck is, to offer before Go (Directions). */
-  | { type: 'routes'; id: number; node: string }
+  /** The routes to a map node (its uid, hex; or to `also`, if a route comes to that last) from where the truck is, to
+   * offer before Go (Directions). */
+  | { type: 'routes'; id: number; node: string; also?: string }
   /** Go along the route at `index` of those offered for `routes` request `id`: the host hands it to the
    * game's GPS and answers `followed`. */
   | { type: 'follow'; id: number; index: number }
@@ -308,6 +361,132 @@ export type PageMessage =
   | { type: 'appleMusic'; command: AppleMusicCommand }
   /** A command for YouTube Music's web player (`westplay_host::youtube_music::Command`). */
   | { type: 'youtubeMusic'; command: YouTubeMusicCommand }
+  /** A command for Player's own player (`westplay_host::music_folder::Command`). */
+  | { type: 'player'; command: PlayerCommand }
+  /** What the Safari app asks of its pages (`westplay_host::safari::Command`). */
+  | { type: 'safari'; command: SafariCommand }
+
+/** A Safari tab's page (`westplay_host::safari::TabState`): its address and title, whether it loads, whether it
+ * can go back or forward, its icon's address, its colour at the top (a CSS colour), whether it's full screen,
+ * the field pressed in it (a password's value as dots) and why it failed to load. */
+export interface SafariTabState {
+  url: string
+  title: string
+  loading: boolean
+  back: boolean
+  forward: boolean
+  favicon?: string
+  theme?: string
+  /** The page's own ground (its background): what of the cab edges the page takes it. */
+  ground?: string
+  fullScreen: boolean
+  /** The page has drawn something (its content loaded): the cab is cut open over it only then. */
+  painted?: boolean
+  /** `n`: which press of a field it is (a field pressed again is told again). */
+  field?: { kind: string; value: string; n?: number }
+  failed?: string
+  /** A drop-down list pressed in the page: the cab shows its options (the browser's would be a window on the PC). */
+  list?: SafariList
+}
+
+/** A page's drop-down list (`westplay_host::safari::List`): its options, the one picked (-1: none), and where it is
+ * (frame pixels from the page's top left; none: not known). */
+export interface SafariList {
+  id: string
+  options: { label: string; group?: string; disabled?: boolean }[]
+  selected: number
+  rect?: { x: number; y: number; width: number; height: number }
+}
+
+/** A page's dialog: `alert` (OK), `confirm` (OK or Cancel), `prompt` (text, with OK or Cancel). */
+export interface SafariDialog {
+  kind: 'alert' | 'confirm' | 'prompt'
+  message: string
+  text?: string
+}
+
+/** What the Safari app asks of its pages (`westplay_host::safari::Command`): a tab shown at a rectangle of the
+ * frame (pixels; `covers`: where the cab draws over it there, its own and the mouse's), and the rest. */
+export type SafariCommand =
+  | {
+      action: 'show'
+      tab: number
+      url: string
+      x: number
+      y: number
+      width: number
+      height: number
+      zoom: number
+      covers?: { x: number; y: number; width: number; height: number }[]
+      /** The cab's appearance: the pages see it as the system's. */
+      dark?: boolean
+      /** Its bottom corners' rounding (frame pixels): the page cut to it. */
+      radius?: number
+      /** The cab's language (`tr-TR`): the pages are asked for in it. */
+      language?: string
+    }
+  /** The cab's appearance changed: every page sees it (CSS `prefers-color-scheme`). */
+  | { action: 'appearance'; dark: boolean }
+  | { action: 'hide'; tab?: number }
+  | { action: 'open'; tab: number; url: string }
+  | { action: 'close'; tab: number }
+  | { action: 'back'; tab: number }
+  | { action: 'forward'; tab: number }
+  | { action: 'reload'; tab: number }
+  | { action: 'stop'; tab: number }
+  | { action: 'type'; text: string }
+  | { action: 'key'; key: 'backspace' | 'enter' }
+  | { action: 'pause' }
+  | { action: 'resume' }
+  | { action: 'level'; level: number }
+  | { action: 'answer'; tab: number; accept: boolean; text?: string }
+  | { action: 'exitFullScreen'; tab: number }
+  /** The option picked from the page's drop-down list (`index` left out: the list put away). */
+  | { action: 'pick'; tab: number; list: string; index?: number }
+  | { action: 'picture'; tab: number }
+  /** The websites' data from `since` on (ms since 1970; 0: all of it). */
+  | { action: 'forgetWebsites'; since?: number }
+
+/** A song of the game's music folder (`westplay_host::music_folder::Song`): its file's name, and what its tags
+ * say (none on a file without them): title, artist, length (seconds; 0: not known), cover (a file at
+ * `https://westplay.music-covers/`). */
+export interface PlayerSong {
+  file: string
+  title?: string
+  artist?: string
+  seconds: number
+  cover?: string
+}
+
+export type PlayerRepeat = 'off' | 'all' | 'one'
+
+/** What Player plays (`westplay_host::music_folder::Playback`): the song (its file), playing or not (loading:
+ * asked to, its sound not come yet), where and how long (seconds), the options, the volume (0 to 1), and where
+ * it is in the songs playing. */
+export interface PlayerPlayback {
+  file: string
+  playing: boolean
+  loading: boolean
+  position: number
+  duration: number
+  shuffle: boolean
+  repeat: PlayerRepeat
+  volume: number | null
+  index: number
+  count: number
+}
+
+/** What Player asks of its player: the folder's songs (by file name, in its order) from the one at `index`
+ * (shuffled: from any when there's no index), or play on (`play` alone); its controls. */
+export type PlayerCommand =
+  | { action: 'play'; files?: string[]; index?: number; shuffle?: boolean }
+  | { action: 'pause' }
+  | { action: 'next' }
+  | { action: 'previous' }
+  | { action: 'seek'; seconds: number }
+  | { action: 'volume'; percent: number }
+  | { action: 'shuffle'; on: boolean }
+  | { action: 'repeat'; mode: PlayerRepeat }
 
 /** What the Spotify app asks of Spotify's web player (`westplay_host::spotify::Command`), run hidden by the
  * host: its sign-in, a question (answered with `spotifyAnswer` and the same `id`), and the player's controls
@@ -586,7 +765,7 @@ export type AppleMusicQuestion =
   | { ask: 'search'; query: string }
   | { ask: 'collection'; id: string }
   | { ask: 'artist'; id: string }
-  | { ask: 'library'; shelf: AppleMusicShelf; sort?: string; folder?: string; language?: 'en' | 'tr' }
+  | { ask: 'library'; shelf: AppleMusicShelf; sort?: string; folder?: string; language?: string }
   | { ask: 'lyrics'; id: string }
 
 export interface AppleMusicAnswers {
@@ -642,7 +821,7 @@ export type YouTubeMusicCommand =
   | { action: 'signIn' }
   | { action: 'signOut' }
   | { action: 'ask'; id: number; question: YouTubeMusicQuestion }
-  | { action: 'language'; code: 'en' | 'tr' }
+  | { action: 'language'; code: string }
   | { action: 'play'; watch?: YouTubeMusicWatch }
   | { action: 'pause' }
   | { action: 'next' }

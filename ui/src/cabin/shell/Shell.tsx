@@ -1,12 +1,14 @@
-import { type CSSProperties, type ReactNode, useEffect, useLayoutEffect, useRef } from 'react'
-import { isInHost } from '../../shared/host'
+import { type CSSProperties, type ReactNode, useEffect, useLayoutEffect, useMemo, useRef } from 'react'
+import { isInHost, postToHost } from '../../shared/host'
+import { cursorArea } from './cursorArea'
 import { useLook, useLookChanges, useOemStrip, useScreenProfile } from '../state/hooks'
 import { usePreparedIcons } from '../state/looks'
 import { frameInsets, NO_INSETS, OEM_STRIPS } from '../state/oem'
-import { RETURN_BUTTON_SIZE, returnButtonCentre } from '../state/screen'
+import { RETURN_BUTTON_SIZE, SIDEBAR_BUTTONS, returnButtonCentre } from '../state/screen'
 import { textScale } from '../state/textSize'
 import { Player } from '../apps/youtube/Player'
-import { type Hole, useYouTube } from '../apps/youtube/youtube'
+import { holeMask, onlyHole, usePageHole } from '../apps/safari/hole'
+import { useYouTube } from '../apps/youtube/youtube'
 import { useYouTubeMusic } from '../apps/youtubeMusic/youtubeMusic'
 import { Keyboard } from '../keyboard/Keyboard'
 import { useCabin, useLive } from '../state/store'
@@ -43,6 +45,12 @@ export function Shell({ children, overlay, entering = false }: ShellProps) {
     '--oem-left': `${insets.left}px`,
     '--oem-bottom': `${insets.bottom}px`,
     '--ui-scale': profile.scale,
+    '--sidebar-icon-scale': profile.sidebarIcons ?? 1,
+    '--sidebar-button-scale': profile.sidebarButtons ?? SIDEBAR_BUTTONS,
+    // None: the stylesheet's own.
+    '--screen-app-gap': px(profile.sidebarGaps?.apps),
+    '--screen-home-bottom': px(profile.sidebarGaps?.homeBottom),
+    '--screen-button-gap': px(profile.sidebarGaps?.buttons),
   } as CSSProperties
   // The screen changes' snapshots hang off <html>, not the shell: they're cut to the CarPlay area with these
   // too (transitions.css).
@@ -68,7 +76,7 @@ export function Shell({ children, overlay, entering = false }: ShellProps) {
   // Handed to the truck (the sidebar's truck button, or the W shortcut): CarPlay shrinks into WestPlay's
   // button and the truck's own screen shows; the button grows it back.
   const truckScreen = useCabin((state) => state.truckScreen)
-  const button = returnButtonCentre(profile, insets.left)
+  const button = returnButtonCentre(profile, insets.left, layout)
   // A video full screen: the rest of the CarPlay area steps aside for it (apps/youtube/youtube.css). A video
   // in small (YouTube's Now playing): the CarPlay area is cut open where it shows.
   const watching = useYouTube((state) => state.open)
@@ -76,7 +84,11 @@ export function Shell({ children, overlay, entering = false }: ShellProps) {
   // YouTube Music's music video in its Now Playing, the same way.
   const youtubeHole = useYouTube((state) => state.hole)
   const musicHole = useYouTubeMusic((state) => state.hole)
-  const hole = youtubeHole ?? musicHole
+  // Safari's page the same way, with what of Safari is drawn over it (apps/safari/hole.ts).
+  const pageHole = usePageHole((state) => state.hole)
+  const pageCovers = usePageHole((state) => state.covers)
+  const hole = youtubeHole ?? musicHole ?? pageHole
+  const covers = useMemo(() => (pageHole ? Object.values(pageCovers) : []), [pageHole, pageCovers])
   // Over a video full screen, pointing at the left edge brings the sidebar back (shell/sidebarPeek.ts).
   const carplay = useRef<HTMLDivElement>(null)
   // Eucatur Play: on the Eucatur tablet the sidebar steps aside the same way (the tablet has its own), and
@@ -90,6 +102,36 @@ export function Shell({ children, overlay, entering = false }: ShellProps) {
     if (peek) useYouTube.setState({ holdSidebar: false })
   }, [peek])
 
+  // Where the host's cursor may be seen (shell/cursorArea.ts): under the black corners, the CarPlay area as it
+  // rests (beside the truck's strip; not as it scales out to the truck and back), their radius as laid out (in
+  // the CarPlay area's own units, its UI scale); told again whenever they change.
+  const corners = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    const element = corners.current
+    if (!element) return
+    const tell = () => {
+      const [width, height] = [window.innerWidth, window.innerHeight]
+      // The corners' radius (shell.css `--screen-radius`): the sidebar's and the margin, in page pixels.
+      const sidebar = element.parentElement?.querySelector('.sidebar')
+      const edge = parseFloat(getComputedStyle(element).getPropertyValue('--edge'))
+      const sidebarRadius = sidebar ? parseFloat(getComputedStyle(sidebar).borderTopLeftRadius) : 0
+      const radius = (sidebarRadius + edge) * profile.scale
+      // The screen changes' root snapshot is cut to the same round corners (transitions.css): on <html>, where it
+      // hangs, in page pixels.
+      document.documentElement.style.setProperty('--carplay-corner', `${radius}px`)
+      const area = cursorArea(
+        { left: insets.left, top: 0, right: width, bottom: height - insets.bottom, radius },
+        { width, height },
+        truckScreen,
+      )
+      if (isInHost()) postToHost({ type: 'cursorArea', area })
+    }
+    tell()
+    const resized = new ResizeObserver(tell)
+    resized.observe(element)
+    return () => resized.disconnect()
+  }, [truckScreen, profile.scale, insets.left, insets.bottom])
+
   return (
     <main className={`shell appearance-${appearance}`} style={style}>
       {strip && !isInHost() && <GameStripPreview name={strip.name} />}
@@ -98,7 +140,7 @@ export function Shell({ children, overlay, entering = false }: ShellProps) {
         className={`carplay${truckScreen ? ' handed-over' : ''}${watching ? ' watching' : ''}${onTablet ? ' on-tablet' : ''}${watching && holdSidebar ? ' hold-sidebar' : ''}${peek ? ' peek-sidebar' : ''}`}
         style={{
           transformOrigin: `${button.x - insets.left}px ${button.y}px`,
-          ...(hole && !watching && isInHost() ? holeMask(hole) : {}),
+          ...(hole && !watching && isInHost() ? holeMask(hole, covers) : {}),
         }}
         aria-hidden={truckScreen}
       >
@@ -109,8 +151,31 @@ export function Shell({ children, overlay, entering = false }: ShellProps) {
           <Player />
           <Keyboard />
           <VolumeHud />
+          <div ref={corners} className="screen-corners" aria-hidden />
         </div>
       </div>
+      {/* The shadows of what's drawn over Safari's page (the keyboard, a menu), falling on the page where it shows
+          through: the cab is cut away there, its own shadows with it (apps/safari/hole.ts). */}
+      {pageHole && hole === pageHole && !watching && !truckScreen && isInHost() && (
+        <div className="page-shadows" style={onlyHole(pageHole)} aria-hidden>
+          {Object.entries(pageCovers).map(
+            ([key, cover]) =>
+              cover.shadow && (
+                <div
+                  key={key}
+                  style={{
+                    left: cover.x,
+                    top: cover.y,
+                    width: cover.width,
+                    height: cover.height,
+                    borderRadius: `${cover.top ?? cover.radius}px ${cover.top ?? cover.radius}px ${cover.radius}px ${cover.radius}px`,
+                    boxShadow: cover.shadow,
+                  }}
+                />
+              ),
+          )}
+        </div>
+      )}
       {/* What's drawn over the video where it shows through the CarPlay area (apps/youtube/VideoHole.tsx). */}
       <div id="video-over" className={truckScreen ? 'video-over handed-over' : 'video-over'} />
       <button
@@ -132,18 +197,6 @@ export function Shell({ children, overlay, entering = false }: ShellProps) {
   )
 }
 
-/** A mask showing everything but a rounded rectangle, through which what's under the page shows. */
-function holeMask({ x, y, width, height, radius }: Hole): CSSProperties {
-  const shape = `<svg xmlns='http://www.w3.org/2000/svg' width='${width}' height='${height}'><rect width='${width}' height='${height}' rx='${radius}'/></svg>`
-  return {
-    maskImage: `linear-gradient(#000 0 0), url("data:image/svg+xml,${encodeURIComponent(shape)}")`,
-    maskPosition: `0 0, ${x}px ${y}px`,
-    maskSize: `100% 100%, ${width}px ${height}px`,
-    maskRepeat: 'no-repeat',
-    maskComposite: 'exclude',
-  }
-}
-
 /** Browser previews have no game screen behind the page: mark where the game would draw its strip. */
 function GameStripPreview({ name }: { name: string }) {
   return (
@@ -151,4 +204,9 @@ function GameStripPreview({ name }: { name: string }) {
       <span>{name} strip (drawn by the game)</span>
     </div>
   )
+}
+
+/** A profile's length in page units as a CSS length; none, the stylesheet's own. */
+function px(value: number | undefined): string | undefined {
+  return value === undefined ? undefined : `${value}px`
 }

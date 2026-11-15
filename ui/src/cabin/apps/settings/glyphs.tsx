@@ -70,6 +70,26 @@ export function SoundGlyph() {
   )
 }
 
+/** Date & Time: a clock face, its hands at ten past ten. */
+export function ClockGlyph() {
+  return (
+    <TileGlyph>
+      <path
+        d="M12 3.2a8.8 8.8 0 1 0 0 17.6 8.8 8.8 0 0 0 0-17.6Zm0 2a6.8 6.8 0 1 1 0 13.6 6.8 6.8 0 0 1 0-13.6Z"
+        fillRule="evenodd"
+      />
+      <path
+        d="M12 7.6V12l-3.2 2"
+        fill="none"
+        stroke="#fff"
+        strokeWidth="1.9"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </TileGlyph>
+  )
+}
+
 /** The chevron after a row that opens a page. */
 export function ChevronGlyph({ back = false }: { back?: boolean }) {
   return (
@@ -105,6 +125,31 @@ export function CheckGlyph() {
       aria-hidden
     >
       <path d="m5 12.5 4.6 4.6L19 7.5" />
+    </svg>
+  )
+}
+
+/** A sun, as iOS's brightness slider has at its ends: small (its rays short) at the dim end, large at the bright. */
+export function SunGlyph({ large = false }: { large?: boolean }) {
+  const size = large ? 34 : 24
+  const [core, from, to] = large ? [5, 8.5, 11.5] : [4, 7, 8.5]
+  return (
+    <svg
+      viewBox="-12 -12 24 24"
+      width={size}
+      height={size}
+      fill="currentColor"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      aria-hidden
+    >
+      <circle r={core} stroke="none" />
+      {Array.from({ length: 8 }, (_, ray) => {
+        const angle = (ray * Math.PI) / 4
+        const [x, y] = [Math.cos(angle), Math.sin(angle)]
+        return <line key={ray} x1={x * from} y1={y * from} x2={x * to} y2={y * to} />
+      })}
     </svg>
   )
 }

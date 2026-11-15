@@ -7,16 +7,54 @@
   position: relative;
   flex: 1;
   border-radius: var(--panel-radius);
-  overflow: hidden;
+}
+
+/* Its layers (MapView.tsx), each the tile's size; on the Dashboard the window, the content and the still layer
+   slide by transforms as the map grows and shrinks (dashboard.css). */
+.map-clip,
+.map-window,
+.map-content,
+.map-still,
+.map-shadow-clip,
+.map-shadow {
+  position: absolute;
+  inset: 0;
+}
+
+/* Rounded by clip paths, the left corners by the clip standing still and the right ones by the sliding window: the
+   live map's canvas is a layer of its own, and overflow's rounded clip alone can drop to square corners on and
+   off in the cab's offscreen page as layers come and go; a clip path holds (and cuts off its element's own
+   shadow: the shadow is drawn apart, below). */
+.map-clip,
+.map-window {
+  clip-path: inset(0 round var(--panel-radius));
+}
+
+.map-window {
   background: var(--map-ground);
+}
+
+.map-still {
+  pointer-events: none;
+}
+
+.map-still > * {
+  pointer-events: auto;
+}
+
+/* The tile's shadow: its left end from a copy standing still, up to the left corners' curve; the rest from one
+   sliding with the window, cut off before it there. */
+.map-shadow {
+  border-radius: var(--panel-radius);
   box-shadow: var(--shadow-raised-large);
 }
 
-/* The live map, rounded with the tile: its canvas is a layer of its own, and overflow's rounded clip alone
-   can drop to square corners on and off in the cab's offscreen page as layers come and go; a clip path
-   holds (on the map, not the tile, whose shadow it would cut off). */
-.map-tile > .road-map-host {
-  clip-path: inset(0 round var(--panel-radius));
+.map-shadow-left {
+  clip-path: inset(-80px calc(100% - var(--panel-radius)) -80px -80px);
+}
+
+.map-shadow-clip {
+  clip-path: inset(-80px -80px -80px var(--panel-radius));
 }
 
 /* The drawn map, tilted like CarPlay's driving view. */
@@ -114,22 +152,31 @@
   gap: 10px;
 }
 
-/* The European sign: white, a red ring, black figures (the same by night, as the real one). */
+/* The European sign: white, a red ring, black figures (the same by night, as the real one). A pictogram, as the
+   speed under it: its figures sized by the sign (--sign), not by the Text Size, and smaller for three digits, as
+   the real sign's are narrower (owner 2026-11-13: grown with the Text Size, two digits touched the ring at its 100%
+   and three ran through it). */
 .speed-limit {
-  width: 66px;
-  height: 66px;
+  --sign: 66px;
+  width: var(--sign);
+  height: var(--sign);
   box-sizing: border-box;
   border-radius: 50%;
   display: grid;
   place-items: center;
   background: #fff;
-  border: 7px solid #e3141b;
+  border: calc(var(--sign) * 7 / 66) solid #e3141b;
   box-shadow: 0 2px 8px rgb(0 0 0 / 0.3);
   color: #111;
-  font-size: calc(25px * var(--text-scale, 1));
+  font-size: calc(var(--sign) * 0.38);
   font-weight: 700;
   letter-spacing: -0.02em;
   font-variant-numeric: tabular-nums;
+}
+
+.speed-limit.three-digits {
+  font-size: calc(var(--sign) * 0.33);
+  letter-spacing: -0.06em;
 }
 
 .speed-badge {
@@ -161,6 +208,9 @@
 
 /* A map WestPlay doesn't allow: the tile says so instead of showing it (MapView). */
 .map-blocked {
+  overflow: hidden;
+  background: var(--map-ground);
+  box-shadow: var(--shadow-raised-large);
   display: grid;
   place-content: center;
   justify-items: center;
@@ -189,6 +239,14 @@
   text-wrap: balance;
 }
 
+/* The Dashboard's zoom pair in the map's round corner (owner 2026-11-03: "more up and left"), as the panels round
+   the screen's: its own round end the same way round, as far from the corner's curve as from the map's edges (the
+   corner's radius less half the pair's width, 64 px). */
+.dashboard .map-controls {
+  right: calc(var(--panel-radius) - 32px);
+  bottom: calc(var(--panel-radius) - 32px);
+}
+
 /* The Dashboard's map on a short screen (the 7" Scania's, its UI scaled up: about 395 x 400 in its own
    units): the arrival pill, the speeds and the zoom pair don't fit side by side along its bottom (owner
    2026-10-21: they overlapped). The pill goes to the top, where nothing else is, and all three are smaller. */
@@ -211,10 +269,7 @@
   }
 
   .dashboard .speed-limit {
-    width: 46px;
-    height: 46px;
-    border-width: 5px;
-    font-size: calc(18px * var(--text-scale, 1));
+    --sign: 46px;
   }
 
   .dashboard .speed-badge {
@@ -224,8 +279,8 @@
   }
 
   .dashboard .map-controls {
-    right: 14px;
-    bottom: 14px;
+    right: calc(var(--panel-radius) - 23px);
+    bottom: calc(var(--panel-radius) - 23px);
   }
 
   .dashboard .map-control {

@@ -33,6 +33,12 @@ pub struct Settings {
     pub graphics: GraphicsSettings,
     #[serde(deserialize_with = "lenient")]
     pub sound: SoundSettings,
+    #[serde(deserialize_with = "lenient")]
+    pub map: MapSettings,
+    /// The language WestPlay speaks, in the cab and the companion (the companion's Setup page): one of the
+    /// game's, by its code (`tr_tr`), or `None`: the game's own (owner 2026-11-03).
+    #[serde(deserialize_with = "lenient")]
+    pub language: Option<LanguageCode>,
     /// Eucatur Play (nov/2026): where the Eucatur warnings show in the game.
     #[serde(deserialize_with = "lenient")]
     pub eucatur: EucaturSettings,
@@ -54,6 +60,51 @@ pub struct EucaturSettings {
 impl Default for EucaturSettings {
     fn default() -> Self {
         Self { avisos_tela: true, avisos_por_cima: true }
+
+    }
+}
+
+/// One of the game's language codes, as its `config.cfg` writes them (`tr_tr`, `pt_br`): two letters, `_`, two.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(transparent)]
+pub struct LanguageCode(String);
+
+impl LanguageCode {
+    pub fn new(code: &str) -> Option<Self> {
+        let bytes = code.as_bytes();
+        let letters = |part: &[u8]| part.iter().all(u8::is_ascii_lowercase);
+        (bytes.len() == 5 && bytes[2] == b'_' && letters(&bytes[..2]) && letters(&bytes[3..]))
+            .then(|| Self(code.to_owned()))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl<'de> Deserialize<'de> for LanguageCode {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let code = String::deserialize(deserializer)?;
+        Self::new(&code).ok_or_else(|| serde::de::Error::custom(format!("not a language: {code}")))
+    }
+}
+
+/// The cab's map (the companion's Map page): whether its buildings rise from it, and its bridges and ramps; and
+/// how the maps are prepared.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct MapSettings {
+    pub buildings: bool,
+    pub roads: bool,
+    /// Prepare Maps Faster: a build on every processor thread, drawing more at once while it has taken less than
+    /// four fifths of the PC's memory (`westplay_mapdata::threads::FULL_SHARE`), for PCs with plenty of both
+    /// (owner 2026-11-06). Off: half the processor, the memory kept low.
+    pub fast: bool,
+}
+
+impl Default for MapSettings {
+    fn default() -> Self {
+        Self { buildings: true, roads: true, fast: false }
     }
 }
 
@@ -69,6 +120,20 @@ pub struct SoundSettings {
     /// Custom chosen: the curve plays (otherwise flat).
     #[serde(deserialize_with = "lenient")]
     pub custom: bool,
+    /// Which of a coach's speakers play (the companion's Truck Screen page).
+    #[serde(deserialize_with = "lenient")]
+    pub coach: CoachSpeakers,
+}
+
+/// Which of a coach's speakers play (owner 2026-11-13: a setting of the companion's, not the cab's, as real coaches
+/// have a cockpit system and a passengers' one): the driver's, round the seat, or the passengers', every overhead unit
+/// along the aisle heard from the seat (up to 28 at once: a weak processor feels it, the companion says so).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum CoachSpeakers {
+    #[default]
+    Driver,
+    Passengers,
 }
 
 impl SoundSettings {
@@ -224,6 +289,8 @@ pub struct Keybinds {
     pub volume_up: Binding,
     pub volume_down: Binding,
     pub play_pause: Binding,
+    pub brightness_down: Binding,
+    pub brightness_up: Binding,
 }
 
 impl<'de> Deserialize<'de> for Keybinds {
@@ -239,30 +306,44 @@ impl<'de> Deserialize<'de> for Keybinds {
             volume_up: binding("volumeUp", defaults.volume_up),
             volume_down: binding("volumeDown", defaults.volume_down),
             play_pause: binding("playPause", defaults.play_pause),
+            brightness_down: binding("brightnessDown", defaults.brightness_down),
+            brightness_up: binding("brightnessUp", defaults.brightness_up),
         })
     }
 }
 
 impl Default for Keybinds {
     /// The interaction key with 1, 2 and 3 (as promised to the players who asked: Alt+1, Alt+2, Alt+3), in a
-    /// row as on a stereo (owner 2026-10-21): volume down, play/pause between, volume up.
+    /// row as on a stereo (owner 2026-10-21): volume down, play/pause between, volume up; then the screen's
+    /// brightness down and up with 4 and 5 (owner 2026-11-13).
     fn default() -> Self {
         let with_key = |code| Binding { key: KeyCode(code), with_interaction_key: true };
-        Self { volume_down: with_key(0x31), play_pause: with_key(0x32), volume_up: with_key(0x33) }
+        Self {
+            volume_down: with_key(0x31),
+            play_pause: with_key(0x32),
+            volume_up: with_key(0x33),
+            brightness_down: with_key(0x34),
+            brightness_up: with_key(0x35),
+        }
     }
 }
 
 impl Keybinds {
-    /// Each keybind as the bridge carries it ([`westplay_shared::keybind_value`]), in [`Keybind::ALL`]'s order.
+    /// Each keybind as the bridge carries it ([`westplay_shared::keybind_value`]), in [`Keybind::ALL`]'s order. One
+    /// pressed as one before it is (a player's own Alt+4 for a volume key, from before the brightness keys took 4
+    /// and 5 by default) is left unbound (0): the player's own keeps the key, and one press never does two things.
     pub fn bridge_values(&self) -> [u32; KEYBIND_COUNT] {
-        Keybind::ALL.map(|keybind| {
+        let values = Keybind::ALL.map(|keybind| {
             let binding = match keybind {
                 Keybind::VolumeUp => self.volume_up,
                 Keybind::VolumeDown => self.volume_down,
                 Keybind::PlayPause => self.play_pause,
+                Keybind::BrightnessDown => self.brightness_down,
+                Keybind::BrightnessUp => self.brightness_up,
             };
             keybind_value(binding.key.virtual_key(), binding.with_interaction_key)
-        })
+        });
+        std::array::from_fn(|i| if values[..i].contains(&values[i]) { 0 } else { values[i] })
     }
 }
 
@@ -472,14 +553,19 @@ mod tests {
             sound: SoundSettings {
                 equalizer: crate::speakers::Equalizer { bass: -3, mid: 1, treble: 2 },
                 custom: true,
+                coach: CoachSpeakers::Passengers,
             },
             eucatur: EucaturSettings { avisos_tela: false, avisos_por_cima: true },
+            map: MapSettings { buildings: false, roads: false, fast: true },
+            language: LanguageCode::new("pt_br"),
         };
         let json = to_json(&settings);
+        assert!(json.contains("\"coach\": \"passengers\""), "{json}");
         assert!(json.contains("\"version\": 2"), "{json}");
         assert!(json.contains("\"key\": 5"), "{json}");
         assert!(json.contains("\"mode\": \"toggle\""), "{json}");
         assert!(json.contains("\"truckStrip\": \"off\""), "{json}");
+        assert!(json.contains("\"language\": \"pt_br\""), "{json}");
         assert_eq!(parse(&json).unwrap(), settings);
     }
 
@@ -497,12 +583,31 @@ mod tests {
             [partial.keybinds.volume_down, partial.keybinds.play_pause, partial.keybinds.volume_up],
             [with_key(0x31), with_key(0x32), with_key(0x33)]
         );
+        // And from before the brightness keys: the interaction key with 4 (down) and 5 (up).
+        assert_eq!(
+            [partial.keybinds.brightness_down, partial.keybinds.brightness_up],
+            [with_key(0x34), with_key(0x35)]
+        );
         // Files from before the truck strip was a setting keep it on Auto.
         assert_eq!(partial.screen.truck_strip, TruckStrip::Auto);
         // And from before the GPU was: WestPlay picks it.
         assert_eq!(partial.graphics.gpu, None);
         // Eucatur Play: from before the Eucatur warnings were settings, both on.
         assert_eq!(partial.eucatur, EucaturSettings { avisos_tela: true, avisos_por_cima: true });
+        // And from before the map's buildings and roads could be switched: they stay on.
+        assert!(partial.map.buildings && partial.map.roads);
+        // And from before the language could be chosen: the game's.
+        assert_eq!(partial.language, None);
+    }
+
+    #[test]
+    fn a_language_is_one_of_the_games_codes_or_the_games_own() {
+        assert_eq!(parse(r#"{"language": "de_de"}"#).unwrap().language, LanguageCode::new("de_de"));
+        for bad in [r#""de""#, r#""DE_DE""#, r#""de-de""#, r#""de_de&x""#, "7", "null"] {
+            let settings = parse(&format!(r#"{{"language": {bad}, "map": {{"roads": false}}}}"#)).unwrap();
+            assert_eq!(settings.language, None, "{bad}");
+            assert!(!settings.map.roads, "{bad}");
+        }
     }
 
     #[test]
@@ -535,6 +640,25 @@ mod tests {
         );
         // Not an object at all: every default.
         assert_eq!(parse(r#"{"version": 2, "keybinds": 4}"#).unwrap().keybinds, defaults);
+    }
+
+    #[test]
+    fn a_keybind_pressed_as_one_before_it_is_left_unbound() {
+        let with_key = |code| keybind_value(code, true);
+        let defaults = Keybinds::default();
+        // Volume up, Volume down, Play/Pause, Brightness down, Brightness up, as the bridge orders them.
+        assert_eq!(
+            defaults.bridge_values(),
+            [with_key(0x33), with_key(0x31), with_key(0x32), with_key(0x34), with_key(0x35)]
+        );
+        // A player's own Alt+4 for Volume up (from before the brightness keys): theirs keeps it.
+        let own = Binding { key: KeyCode::new(0x34).unwrap(), with_interaction_key: true };
+        let keybinds = Keybinds { volume_up: own, ..defaults };
+        assert_eq!(keybinds.bridge_values(), [with_key(0x34), with_key(0x31), with_key(0x32), 0, with_key(0x35)]);
+        // 4 alone is another keybind than Alt+4.
+        let alone = Binding { key: KeyCode::new(0x34).unwrap(), with_interaction_key: false };
+        let keybinds = Keybinds { volume_up: alone, ..defaults };
+        assert_eq!(keybinds.bridge_values()[3], with_key(0x34));
     }
 
     #[test]

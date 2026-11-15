@@ -2,7 +2,23 @@ import { call } from './bridge'
 import type { HostStatus } from './useHostStatus'
 
 /** An install of the game. Mirrors the app's `setup::GameInfo`. */
+/** Which of SCS's truck games. Mirrors the app's `game::Kind`. */
+export type GameKind = 'ets2' | 'ats'
+
+/** Each game's name, as it's known in every language (a title, never in a sentence: names are declined). */
+export const GAME_NAMES: Record<GameKind, string> = {
+  ets2: 'Euro Truck Simulator 2',
+  ats: 'American Truck Simulator',
+}
+
+/** Each game's short name, as players say it (the list's line under Setup). */
+export const GAME_SHORT_NAMES: Record<GameKind, string> = { ets2: 'ETS2', ats: 'ATS' }
+
+/** The games WestPlay works with, in the order the companion lists them. */
+export const GAME_KINDS: GameKind[] = ['ets2', 'ats']
+
 export interface GameInfo {
+  kind: GameKind
   dir: string
   foundBy: 'steam' | 'installed' | 'chosen'
   version: string | null
@@ -15,11 +31,15 @@ export interface GameInfo {
 export interface SetupState {
   /** The onboarding was gone through: the companion opens on its own pages. */
   finished: boolean
-  /** The game WestPlay is set up in, if it is. */
+  /** The game WestPlay is set up in, if it is: ETS2's, else the one set up (until the companion shows each). */
   game: GameInfo | null
+  /** Every game WestPlay is set up in. */
+  games: GameInfo[]
   /** WestPlay was updated since it put its plugin and mod into that game: the new ones go in once it's
    * closed (`FinishUpdate`). */
   updated: boolean
+  /** Those games, each to put the new plugin and mod into. */
+  outdated: GameInfo[]
   /** Every install of the game found on the PC. */
   found: GameInfo[]
   gameRunning: boolean
@@ -90,7 +110,8 @@ export interface InstallReport {
 export const setupState = () => call<SetupState>('setup_state')
 export const gameRunning = () => call<boolean>('game_running')
 /** Every profile's map prepared again, one by one (failed ones too); the cab keeps its map meanwhile. */
-export const prepareMapsAgain = () => call<void>('prepare_maps_again')
+/** The maps in `folders` (`ProfileMap.folder`) prepared again; none given: every map. */
+export const prepareMapsAgain = (folders?: string[]) => call<void>('prepare_maps_again', { folders: folders ?? null })
 /** Windows' folder picker: the game there, `null` if the player cancelled; rejects for a folder that isn't it. */
 export const chooseGameFolder = (title: string) => call<GameInfo | null>('choose_game_folder', { title })
 export const checkGame = (dir: string) => call<GameCheck>('check_game', { dir })

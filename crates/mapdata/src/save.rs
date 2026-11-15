@@ -46,6 +46,8 @@ pub enum SaveError {
     UnknownValueType(u32),
     UnknownStructure(u32),
     Truncated,
+    /// Unpacks to more than any file can be ([`crate::archive::MOST_ENTRY`]).
+    TooLarge,
 }
 
 impl fmt::Display for SaveError {
@@ -57,6 +59,7 @@ impl fmt::Display for SaveError {
             Self::UnknownValueType(kind) => write!(f, "unknown value type {kind:#x}"),
             Self::UnknownStructure(id) => write!(f, "a unit of undefined structure {id}"),
             Self::Truncated => write!(f, "ends early"),
+            Self::TooLarge => write!(f, "unpacks to more than 1 GiB"),
         }
     }
 }
@@ -80,6 +83,39 @@ pub fn read(data: &[u8]) -> Result<Vec<Unit>, SaveError> {
     }
 }
 
+/// A text file's text, unscrambled if scrambled (`3nK`: [`unscramble`]; Oyuncuyusbis' coaches' definitions since
+/// their 2026-11 versions); any other file as it is.
+pub fn text(data: &[u8]) -> Result<std::borrow::Cow<'_, [u8]>, SaveError> {
+    match data.get(..4) {
+        Some(b"3nK\x01") => Ok(std::borrow::Cow::Owned(unscramble(data)?)),
+        _ => Ok(std::borrow::Cow::Borrowed(data)),
+    }
+}
+
+/// A definition file's SII, however it's written ([`crate::sii`]): its text (decrypted, unscrambled), or a binary
+/// file's units.
+pub(crate) enum Sii<'a> {
+    Text(std::borrow::Cow<'a, [u8]>),
+    Units(Vec<Unit>),
+}
+
+/// A definition file's SII ([`Sii`]): encrypted (`ScsC`, then any of the rest), scrambled (`3nK`), binary (`BSII`) or
+/// text; whatever else, taken as text.
+pub(crate) fn definitions(data: &[u8]) -> Result<Sii<'_>, SaveError> {
+    match data.get(..4) {
+        Some(b"ScsC") => {
+            let decrypted = decrypt(data)?;
+            Ok(match definitions(&decrypted)? {
+                Sii::Text(text) => Sii::Text(std::borrow::Cow::Owned(text.into_owned())),
+                Sii::Units(units) => Sii::Units(units),
+            })
+        }
+        Some(b"3nK\x01") => Ok(Sii::Text(std::borrow::Cow::Owned(unscramble(data)?))),
+        Some(b"BSII") => Ok(Sii::Units(binary(data)?)),
+        _ => Ok(Sii::Text(std::borrow::Cow::Borrowed(data))),
+    }
+}
+
 /// A scrambled file's text (`3nK`, a byte, then the seed: SCS's own light scrambling, which the game reads as it
 /// reads text): each byte XORed with a key from the seed and its place, `((((x << 2) ^ !x) << 3) ^ x)` for `x` the
 /// seed plus the place, in a byte. Measured on mods' manifests (2026-10-24): each one so comes to `SiiNunit…`.
@@ -99,8 +135,16 @@ fn decrypt(data: &[u8]) -> Result<Vec<u8>, SaveError> {
     let packed = cbc::Decryptor::<aes::Aes256>::new(&KEY.into(), &iv.into())
         .decrypt_padded_mut::<Pkcs7>(&mut body)
         .map_err(|_| SaveError::Undecryptable)?;
-    let mut unpacked = Vec::with_capacity(crate::archive::inflated_capacity(packed.len(), size));
-    flate2::read::ZlibDecoder::new(packed).read_to_end(&mut unpacked).map_err(|_| SaveError::Undecryptable)?;
+    // The size is the file's word: the room grows with the real output, never past what a file can be.
+    let most = crate::archive::MOST_ENTRY;
+    let mut unpacked = Vec::with_capacity(crate::archive::starting_room(packed.len(), size));
+    flate2::read::ZlibDecoder::new(packed)
+        .take(most as u64 + 1)
+        .read_to_end(&mut unpacked)
+        .map_err(|_| SaveError::Undecryptable)?;
+    if unpacked.len() > most {
+        return Err(SaveError::TooLarge);
+    }
     Ok(unpacked)
 }
 
@@ -394,18 +438,24 @@ pub fn profile_of(save: &Path) -> Option<PathBuf> {
     Some(save.parent()?.parent()?.parent()?.join("profile.sii"))
 }
 
-/// The save the game wrote last, in any profile, in the game's documents folder or Steam Cloud's: the
-/// one being played, unless the game has loaded a profile that hasn't saved since (see [`latest_of`]).
-pub fn latest(documents: &Path, steam_userdata: Option<&Path>) -> Option<PathBuf> {
-    latest_of(documents, steam_userdata, |_| true)
+/// The save the game wrote last, in any profile, in the game's documents folder or Steam Cloud's (its folder
+/// under `steam_userdata`'s users is the game's Steam app id, `steam_app`): the one being played, unless the game
+/// has loaded a profile that hasn't saved since (see [`latest_of`]).
+pub fn latest(documents: &Path, steam_userdata: Option<&Path>, steam_app: &str) -> Option<PathBuf> {
+    latest_of(documents, steam_userdata, steam_app, |_| true)
 }
 
 /// [`latest`], of the profiles whose folder's name (the profile's name in hexadecimal) `profile` takes.
-pub fn latest_of(documents: &Path, steam_userdata: Option<&Path>, profile: impl Fn(&str) -> bool) -> Option<PathBuf> {
+pub fn latest_of(
+    documents: &Path,
+    steam_userdata: Option<&Path>,
+    steam_app: &str,
+    profile: impl Fn(&str) -> bool,
+) -> Option<PathBuf> {
     let mut profile_dirs = vec![documents.join("profiles"), documents.join("steam_profiles")];
     if let Some(userdata) = steam_userdata {
         for user in std::fs::read_dir(userdata).into_iter().flatten().flatten() {
-            profile_dirs.push(user.path().join("227300/remote/profiles"));
+            profile_dirs.push(user.path().join(steam_app).join("remote").join("profiles"));
         }
     }
     let saves = profile_dirs
@@ -438,6 +488,9 @@ mod tests {
         let units = read(&data).unwrap();
         assert_eq!(units[0].get("author"), Some("Someone"));
         assert!(matches!(read(b"3nK\x01\x00"), Err(SaveError::Truncated)));
+        // As text: unscrambled, and a plain file as it is.
+        assert_eq!(&*super::text(&data).unwrap(), &text[..]);
+        assert_eq!(&*super::text(text).unwrap(), &text[..]);
     }
 
     #[test]
@@ -454,9 +507,16 @@ mod tests {
         };
         let eren = save("4572656E", "autosave");
         let w = save("57", "autosave");
-        assert_eq!(latest(&documents, None), Some(w));
-        assert_eq!(latest_of(&documents, None, |folder| folder == "4572656E"), Some(eren));
-        assert_eq!(latest_of(&documents, None, |folder| folder == "00"), None);
+        assert_eq!(latest(&documents, None, "227300"), Some(w.clone()));
+        // Steam Cloud's, under the game's own app id: ATS's (270880) newer, and not ETS2's.
+        let userdata = root.join("userdata");
+        let cloud = userdata.join("1").join("270880").join("remote").join("profiles").join("41").join("save").join("1");
+        std::fs::create_dir_all(&cloud).unwrap();
+        std::fs::write(cloud.join("game.sii"), "x").unwrap();
+        assert_eq!(latest(&documents, Some(&userdata), "270880"), Some(cloud.join("game.sii")));
+        assert_eq!(latest(&documents, Some(&userdata), "227300"), Some(w));
+        assert_eq!(latest_of(&documents, None, "227300", |folder| folder == "4572656E"), Some(eren));
+        assert_eq!(latest_of(&documents, None, "227300", |folder| folder == "00"), None);
         let _ = std::fs::remove_dir_all(&root);
     }
     use crate::token::string_to_token;
@@ -586,6 +646,56 @@ mod tests {
         u32le(&mut b, 0);
         b.push(0);
         b
+    }
+
+    /// `inner` encrypted as the game encrypts (`ScsC`): packed, then AES-256-CBC with its key, after an HMAC (not
+    /// checked: zeros here), the IV and the unpacked size.
+    pub(crate) fn encrypted(inner: &[u8]) -> Vec<u8> {
+        use aes::cipher::BlockEncryptMut;
+        use std::io::Write;
+        let mut packer = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+        packer.write_all(inner).unwrap();
+        let packed = packer.finish().unwrap();
+        let iv = [7u8; 16];
+        let mut body = packed.clone();
+        body.resize(packed.len() + 16, 0);
+        let sealed = cbc::Encryptor::<aes::Aes256>::new(&KEY.into(), &iv.into())
+            .encrypt_padded_mut::<Pkcs7>(&mut body, packed.len())
+            .unwrap()
+            .to_vec();
+        let mut data = b"ScsC".to_vec();
+        data.extend([0u8; 32]);
+        data.extend(iv);
+        data.extend((inner.len() as u32).to_le_bytes());
+        data.extend(sealed);
+        data
+    }
+
+    /// A definition file reads however the game writes it: text, scrambled, binary, encrypted (over text or binary);
+    /// one that can't be is an error, not taken as text.
+    #[test]
+    fn reads_definitions_however_theyre_written() {
+        let text = b"SiiNunit\n{\nroad_look : road.a\n{\n\tname: \"A\"\n}\n}\n";
+        let as_text = |sii: Sii| match sii {
+            Sii::Text(text) => text.into_owned(),
+            Sii::Units(_) => panic!("units"),
+        };
+        assert_eq!(as_text(definitions(text).unwrap()), text);
+        assert_eq!(as_text(definitions(&encrypted(text)).unwrap()), text);
+        let mut scrambled = b"3nK\x01\x00\x50".to_vec();
+        scrambled.extend(text.iter().enumerate().map(|(place, &byte)| {
+            let x = 0x50u8.wrapping_add(place as u8);
+            byte ^ ((((x << 2) ^ !x) << 3) ^ x)
+        }));
+        assert_eq!(as_text(definitions(&scrambled).unwrap()), text);
+        for binary in [binary_save(), encrypted(&binary_save())] {
+            let Sii::Units(units) = definitions(&binary).unwrap() else { panic!("text") };
+            assert_eq!(units[0].name, "garage.calais");
+        }
+        let mut broken = encrypted(text);
+        broken.truncate(70);
+        assert!(definitions(&broken).is_err());
+        assert!(definitions(b"BSII\x09\x00\x00\x00").is_err());
     }
 
     #[test]

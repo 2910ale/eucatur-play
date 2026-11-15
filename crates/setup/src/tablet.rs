@@ -346,20 +346,22 @@ pub fn mod_trucks_and_marks(mods: &[PathBuf]) -> (Vec<Spot>, Vec<u64>) {
     (spots, apart_marks(&apart))
 }
 
-/// The marks of the vehicles WestPlay's tablet shows nothing in (`westplay_shared::TABLET_APART_FILE`): those of
+/// The marks of the vehicles WestPlay's tablet shows nothing in (`westplay_shared::tablet_apart_file`): those of
 /// [`APART_VEHICLES`], and every vehicle of the mods set apart (`apart`, their ids), by their ids' hashes: the
 /// tablet, a hookup on any vehicle's dashboard set too, can't be kept out of them, so the plugin keeps it blank.
 fn apart_marks(apart: &BTreeSet<String>) -> Vec<u64> {
     let mut marks: BTreeSet<u64> = APART_VEHICLES.iter().copied().collect();
+    marks.extend(BUSES.iter().map(|id| city_hash64(id.as_bytes())));
     marks.extend(apart.iter().map(|id| city_hash64(id.as_bytes())));
     marks.into_iter().collect()
 }
 
-/// Writes `marks` ([`mod_trucks_and_marks`]) into WestPlay's own folder `dir`, beside the mod, for the plugin:
-/// written beside it first, then moved over it, so the plugin never reads half a file.
-pub fn write_apart(marks: &[u64], dir: &Path) -> std::io::Result<()> {
-    let path = dir.join(westplay_shared::TABLET_APART_FILE);
-    let partial = dir.join(format!("{}.partial", westplay_shared::TABLET_APART_FILE));
+/// Writes `marks` ([`mod_trucks_and_marks`]) into WestPlay's own folder `dir`, beside the game `kind`'s mod, for the
+/// plugin: written beside it first, then moved over it, so the plugin never reads half a file.
+pub fn write_apart(marks: &[u64], dir: &Path, kind: crate::game::Kind) -> std::io::Result<()> {
+    let file = westplay_shared::tablet_apart_file(kind.sdk_id());
+    let path = dir.join(file);
+    let partial = dir.join(format!("{file}.partial"));
     std::fs::write(&partial, westplay_shared::write_marks(marks))?;
     std::fs::rename(&partial, &path)
 }
@@ -393,6 +395,14 @@ fn set_apart(path: &Path, mounted: &GameFiles) -> bool {
 
 /// Vehicles never given the tablet whatever mod lists them, by their ids' hashes (`city_hash64`).
 const APART_VEHICLES: &[u64] = &[0xb162_96d6_78c2_d0a8, 0x1cb7_e722_157f_00ff, 0xa8ee_42b0_2d21_0c49];
+
+/// The game's buses (the Coaches DLC's, 2026-11-12, `def/vehicle/bus`): no tablet in a bus (owner 2026-10-24:
+/// "Tablets should NOT appear in buses"). Their hanging items are no truck's (the tablet's are listed from
+/// `def/vehicle/truck`), but their dashboard sets take its hookup as any set does: the plugin keeps it blank in
+/// them. The Scania Touring and the MAN Lion's Coach have WestPlay on their own screens. Not the Volvo 9700: its own
+/// screen stays the game's (no CarPlay in the real one, owner 2026-11-12), and the tablet fitted in its dashboard set
+/// shows WestPlay (owner 2026-11-13: "It has the tablet on dashboard items slot ALREADY").
+const BUSES: &[&str] = &["scania.touring_23", "man.lions_24"];
 
 /// Whether the vehicle `truck` (its id) is one of [`APART_VEHICLES`] (or any of its parts is).
 fn vehicle_apart(truck: &str) -> bool {
@@ -457,10 +467,11 @@ fn body_material() -> String {
 }
 
 /// Its screen: the game's own GPS screen material (`/automat/d8/d8187d0c1f48c659.mat`, the Scania's too: lit
-/// at night as a screen is), on WestPlay's texture.
+/// at night as a screen is), on WestPlay's texture; by day at 1500 rather than the trucks' 2000 (owner 2026-11-11:
+/// "unacceptably bright"), 10 at night as theirs.
 fn screen_material(texture: &str) -> String {
     format!(
-        "effect : \"eut2.dif.lum.rfx\" {{\n\tadditional_ambient : 0.000000\n\tdiffuse : {{ 0.132868 , 0.132868 , 0.132868 }}\n\tluminance_night : 10.000000\n\tluminance_output : 2000.000000\n\treflection : 0.000000\n\tshininess : 40.000000\n\tspecular : {{ 0.010023 , 0.010023 , 0.010023 }}\n\ttexture : \"texture_base\" {{\n\t\tsource : \"{texture}\"\n\t\tsampler : default\n\t}}\n}}\n"
+        "effect : \"eut2.dif.lum.rfx\" {{\n\tadditional_ambient : 0.000000\n\tdiffuse : {{ 0.132868 , 0.132868 , 0.132868 }}\n\tluminance_night : 10.000000\n\tluminance_output : 1500.000000\n\treflection : 0.000000\n\tshininess : 40.000000\n\tspecular : {{ 0.010023 , 0.010023 , 0.010023 }}\n\ttexture : \"texture_base\" {{\n\t\tsource : \"{texture}\"\n\t\tsampler : default\n\t}}\n}}\n"
     )
 }
 
@@ -1144,6 +1155,9 @@ mod tests {
         }
         let screen = files.iter().find(|(path, _)| path.ends_with("screen.mat")).unwrap();
         assert!(String::from_utf8_lossy(&screen.1).contains("source : \"/material/ui/westplay/screen_tablet.tobj\""));
+        // Lit less than the trucks' own screens by day (owner: "unacceptably bright"), as they are at night.
+        let lit = String::from_utf8_lossy(&screen.1);
+        assert!(lit.contains("luminance_output : 1500.000000") && lit.contains("luminance_night : 10.000000"), "{lit}");
         // The icon: 256 x 256.
         let icon =
             &files.iter().find(|(path, _)| path.ends_with("westplay_tablet.dds") && path.contains("ui")).unwrap().1;
@@ -1211,6 +1225,14 @@ mod tests {
         assert!(APART_VEHICLES.iter().all(|mark| marks.contains(mark)));
         assert!(westplay_shared::vehicle_marked(&veiled(&[0x2e, 0x6b, 0x6c, 0x29, 0x32, 0x3e]), &marks));
         assert!(!westplay_shared::vehicle_marked("vehicle.daf.xf", &marks));
+        // The game's buses with WestPlay on their own screens, as the SDK names them or not; their makers' trucks
+        // not, nor the Volvo 9700, whose tablet shows WestPlay.
+        for id in ["vehicle.scania.touring_23", "man.lions_24"] {
+            assert!(westplay_shared::vehicle_marked(id, &marks), "{id}");
+        }
+        for id in ["vehicle.scania.s_2016", "vehicle.man.tgx_2020", "vehicle.volvo.fh_2021", "vehicle.volvo.9700_23"] {
+            assert!(!westplay_shared::vehicle_marked(id, &marks), "{id}");
+        }
         let hanging = |trucks: &[&str]| trucks.iter().map(|truck| Spot::new(truck, Slot::Hanging)).collect::<Vec<_>>();
         assert_eq!(mod_trucks, hanging(&["daf.xf", "hw.actros_l", "jasper.daf_2021"]));
         // Their vehicles left out where the accessories are written too, whatever list they come in by.

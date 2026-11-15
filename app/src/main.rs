@@ -56,6 +56,19 @@ fn companion_ready(window: WebviewWindow) {
     }
 }
 
+/// Whether the companion's window is the one in front. Windows' word: the page's own `document.hasFocus()` says
+/// yes while the window comes up behind another.
+#[tauri::command]
+fn window_in_front(window: WebviewWindow) -> bool {
+    window.hwnd().is_ok_and(|window| westplay_host::in_front(window.0 as isize))
+}
+
+/// The companion's page held its room still, or set it going again: for a log to tell what the room cost.
+#[tauri::command]
+fn room_held(held: bool) {
+    westplay_host::log!("companion: {}", if held { "behind, its room held still" } else { "in front, its room going" });
+}
+
 #[tauri::command]
 fn set_westplay_open(open: bool, request: State<WestplayOpen>) {
     request.0.request(open);
@@ -149,6 +162,24 @@ fn eucatur_install(app: AppHandle) -> Result<(), String> {
         return Err("O Instalador Eucatur não veio com esta cópia do Eucatur Play. Reinstale o Eucatur Play.".into());
     }
     std::process::Command::new(&installer).spawn().map(|_| ()).map_err(|error| error.to_string())
+/// WestPlay's pages elsewhere, at the foot of the companion's list.
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum Social {
+    YouTube,
+    Discord,
+    Patreon,
+}
+
+/// Opens one of WestPlay's pages elsewhere (its YouTube channel, its Discord, its Patreon) in the player's browser.
+/// The addresses are fixed here, as the support page's.
+#[tauri::command]
+fn open_social(site: Social) {
+    westplay_host::browser::open(match site {
+        Social::YouTube => "https://www.youtube.com/@tyraness",
+        Social::Discord => "https://discord.com/invite/Jt34SmwU6",
+        Social::Patreon => "https://www.patreon.com/c/westmods",
+    });
 }
 
 /// Where this run's `app.log` is (the About page): Documents\WestPlay\logs, or WestPlay's own data folder where
@@ -234,6 +265,8 @@ fn main() {
         .register_asynchronous_uri_scheme_protocol(maps::CUSTOMIZE_SCHEME, maps::serve_customize)
         .invoke_handler(tauri::generate_handler![
             companion_ready,
+            window_in_front,
+            room_held,
             set_westplay_open,
             youtube_sign_in,
             youtube_sign_out,
@@ -247,6 +280,7 @@ fn main() {
             open_support_page,
             open_westplay_support_page,
             eucatur_install,
+            open_social,
             app_log_place,
             customize::customize_list,
             customize::add_wallpapers,
@@ -379,6 +413,13 @@ fn start_host(
 ) -> Result<Host, Box<dyn std::error::Error>> {
     let content = cabin_content(app);
     let data_dir = app.path().app_local_data_dir()?;
+    let map_builder = setup::map_builder_file(app);
+    westplay_host::log!(
+        "maps: {}",
+        map_builder
+            .as_ref()
+            .map_or("no map builder: built in WestPlay itself".into(), |file| format!("built by {}", file.display()))
+    );
     let stop = Arc::new(AtomicBool::new(false));
 
     let events = app.clone();
@@ -391,7 +432,7 @@ fn start_host(
         loop {
             let (content, data_dir) = (content.clone(), data_dir.clone());
             let (open_request, settings, stop) = (open_request.clone(), settings.clone(), thread_stop.clone());
-            let (accounts, game) = (accounts.clone(), game.clone());
+            let (accounts, game, map_builder) = (accounts.clone(), game.clone(), map_builder.clone());
             let status_events = events.clone();
             let (settings_events, settings_dir) = (events.clone(), looks.config_dir.clone());
             let customize_changed = looks.customize_changed.clone();
@@ -406,6 +447,7 @@ fn start_host(
                     accounts,
                     settings,
                     game,
+                    map_builder,
                     on_status: Box::new(move |status| {
                         let _ = status_events.emit("host-status", status);
                     }),
@@ -453,6 +495,8 @@ fn start_host(
                 }
                 Ended::Failed(error) => error,
             };
+            // In the log too: shown only, a player's said nothing of it (2026-11-11).
+            westplay_host::log!("WestPlay engine stopped: {error}");
             let status = Status { error: Some(format!("WestPlay engine stopped: {error}")), ..Default::default() };
             let _ = events.emit("host-status", &status);
             return;

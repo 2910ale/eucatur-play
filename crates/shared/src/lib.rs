@@ -9,7 +9,9 @@
 //!   fields are atomics or plain data guarded by a [`SeqLock`], so either side may start first.
 
 pub mod cityhash;
+pub mod crash;
 pub mod navigator;
+pub mod probe;
 
 use std::cell::UnsafeCell;
 use std::sync::LazyLock;
@@ -68,7 +70,7 @@ pub fn bridge_name() -> String {
     format!("Local\\WestPlay.Bridge.v{BRIDGE_VERSION}")
 }
 pub const BRIDGE_MAGIC: u32 = u32::from_le_bytes(*b"WPB7");
-pub const BRIDGE_VERSION: u32 = 24;
+pub const BRIDGE_VERSION: u32 = 28;
 
 /// Size of the app's frames, and the base size of the screen textures in the mod (`westplay_setup::game_mod`
 /// builds them from these).
@@ -110,15 +112,29 @@ pub fn screen_layouts() -> &'static [ScreenLayout] {
 /// model's: crates/setup tablet.rs): laid out at 1280 x 898. Oyuncuyusbis' coaches' displays, each the shape of its model's screen (its corners,
 /// 2026-10-24): the Travego 16 SHD's 16.2 x 9.6 cm (1.691:1, both its bands), the Setra S 531 DT's 15.2 x 9.0 cm
 /// (1.682:1), the MAN Lion's Coach's 15.3 x 9.3 cm (1.646:1); the Setra S 516 HD's tablet's, its own screen's no
-/// more, 20.1 x 12.2 cm (1.648:1, 2026-10-26).
+/// more, 20.1 x 12.2 cm (1.648:1, 2026-10-26). The trucks' own screens likewise, each the shape of the part of it
+/// its display shows (its model's `gps.tobj` piece: its corners and their texture coordinates, 2026-11-03; the
+/// image goes on that part alone, crates/setup game_mod.rs `SHOWN_PARTS`), the UI laid out to fit it, not
+/// stretched to it (owner 2026-11-03): the Scania Smart Dash's 23.44 x 14.35 cm (1.633:1), the Smart Dash
+/// Advanced's 31.51 x 17.49 cm (1.801:1), the Iveco S-Way's 22.25 x 12.46 cm (1.786:1), the Volvo FH's (2021 and
+/// 2024) 19.87 x 11.35 cm (1.750:1); the DAF 2021's 22.37 x 12.58 cm and the Renault T 2024's 19.93 x 11.21 cm,
+/// 16:9, the frame's own. The Coaches DLC's (2026-11-12, their interiors' models' `gps.tobj` pieces, each showing
+/// its script's whole screen): the Scania Touring's 19.43 x 11.08 cm (1.754:1, its corners rounded), the MAN Lion's
+/// Coach 2024's 15.69 x 9.61 cm (1.633:1).
 pub fn page_height(index: usize) -> u32 {
     match screen_layouts().get(index).map(|layout| layout.id) {
         Some("generic") => 793,
+        Some("scania-2025") => 784,
+        Some("scania-2025-advanced") => 711,
+        Some("iveco-sway") => 717,
+        Some("volvo-fh") => 731,
         Some("tablet") => 898,
         Some("travego-16" | "travego-16-23") => 757,
         Some("setra-516") => 777,
         Some("setra-531") => 761,
         Some("man-lions-coach") => 778,
+        Some("scania-touring") => 730,
+        Some("man-lions-24") => 784,
         _ => SCREEN_HEIGHT,
     }
 }
@@ -132,11 +148,26 @@ pub fn tablet_layout() -> usize {
     screen_layouts().iter().position(|layout| layout.id == TABLET).expect("screen_layouts.txt has the tablet")
 }
 
-/// The file in WestPlay's own folder, beside `westplay.scs`, of the vehicles WestPlay's tablet shows nothing in (owner
-/// 2026-10-26: the tablet a hookup any vehicle's dashboard set takes, so blank where it mustn't show): their ids'
-/// hashes ([`cityhash::city_hash64`]), each in hex on a line of its own. Written by setup with the mod, read by the
-/// plugin as the truck changes.
-pub const TABLET_APART_FILE: &str = "tablet_apart.txt";
+/// WestPlay's screens mod for the game `game_id` (the SDK's: `eut2`, `ats`), in WestPlay's own folder in Documents,
+/// which the plugin mounts into that game: each game's own, built from its files (ETS2's named as it was before
+/// ATS).
+pub fn mod_file(game_id: &str) -> &'static str {
+    match game_id {
+        "ats" => "westplay_ats.scs",
+        _ => "westplay.scs",
+    }
+}
+
+/// The file in WestPlay's own folder, beside the game `game_id`'s mod ([`mod_file`]), of the vehicles WestPlay's
+/// tablet shows nothing in there (owner 2026-10-26: the tablet a hookup any vehicle's dashboard set takes, so blank
+/// where it mustn't show): their ids' hashes ([`cityhash::city_hash64`]), each in hex on a line of its own. Written
+/// by setup with the mod, read by the plugin as the truck changes.
+pub fn tablet_apart_file(game_id: &str) -> &'static str {
+    match game_id {
+        "ats" => "tablet_apart_ats.txt",
+        _ => "tablet_apart.txt",
+    }
+}
 
 /// The vehicle `id` (the SDK's, with or without `vehicle.`) among `marks`: its id's hash is, or one of its parts'
 /// (each between dots).
@@ -145,7 +176,7 @@ pub fn vehicle_marked(id: &str, marks: &[u64]) -> bool {
     std::iter::once(id).chain(id.split('.')).any(|part| marks.contains(&cityhash::city_hash64(part.as_bytes())))
 }
 
-/// [`TABLET_APART_FILE`]'s text for `marks`.
+/// [`tablet_apart_file`]'s text for `marks`.
 pub fn write_marks(marks: &[u64]) -> String {
     marks
         .iter()
@@ -158,7 +189,7 @@ pub fn write_marks(marks: &[u64]) -> String {
         .collect()
 }
 
-/// The marks in [`TABLET_APART_FILE`]'s `text`; a line that isn't one is passed over.
+/// The marks in [`tablet_apart_file`]'s `text`; a line that isn't one is passed over.
 pub fn read_marks(text: &str) -> Vec<u64> {
     text.lines().filter_map(|line| u64::from_str_radix(line.trim(), 16).ok()).collect()
 }
@@ -176,6 +207,35 @@ pub fn screen_layout_for_texture(width: u32, height: u32) -> Option<usize> {
 /// as the head turned in the interior). Its size, no screen layout's texture's.
 pub const CAB_MARK_WIDTH: u32 = SCREEN_WIDTH;
 pub const CAB_MARK_HEIGHT: u32 = 1;
+
+/// The parking camera's mark: a fully transparent texture the mod adds to the parking camera of the GPS scripts that
+/// have one (the Coaches DLC's coaches), drawn only while the game shows the camera, over WestPlay's screen (owner
+/// 2026-11-13: the screen under it takes no clicks then). Its size, neither a screen layout's nor the cab's mark's.
+pub const PARKING_MARK_WIDTH: u32 = SCREEN_WIDTH;
+pub const PARKING_MARK_HEIGHT: u32 = 2;
+/// How lately (game frames) the parking camera's mark was drawn for the camera to count as shown (as a screen of
+/// WestPlay's counts as drawn lately in the plugin): half a second at 60 frames a second.
+pub const PARKING_SHOWN_FRAMES: u64 = 30;
+
+/// Whether the parking camera covers WestPlay's screen at game frame `heartbeat`: its mark drawn in frame
+/// `parking_frame` (0: never), at most [`PARKING_SHOWN_FRAMES`] before.
+pub fn parking_camera_shown(parking_frame: u64, heartbeat: u64) -> bool {
+    parking_frame != 0 && heartbeat.saturating_sub(parking_frame) <= PARKING_SHOWN_FRAMES
+}
+
+/// [`PluginBlock::game`]: Euro Truck Simulator 2 (the SDK's `eut2`).
+pub const GAME_ETS2: u32 = 1;
+/// [`PluginBlock::game`]: American Truck Simulator (the SDK's `ats`).
+pub const GAME_ATS: u32 = 2;
+
+/// The [`PluginBlock::game`] of the SDK's game id (0: neither).
+pub fn game_number(game_id: &str) -> u32 {
+    match game_id {
+        "eut2" => GAME_ETS2,
+        "ats" => GAME_ATS,
+        _ => 0,
+    }
+}
 
 /// [`PluginBlock::truck_supported`]: a screen of WestPlay's drawn in the player's truck.
 pub const TRUCK_SUPPORTED: u32 = 1;
@@ -248,6 +308,8 @@ pub struct Bridge {
 #[repr(C)]
 pub struct PluginBlock {
     pub pid: AtomicU32,
+    /// Which game the plugin is in ([`GAME_ETS2`], [`GAME_ATS`]; 0: none, or not known), written before `pid`.
+    pub game: AtomicU32,
     /// Incremented on every presented game frame.
     pub heartbeat: AtomicU64,
     /// LUID of the GPU the game renders on; the app must create its frame texture on the same adapter.
@@ -260,6 +322,9 @@ pub struct PluginBlock {
     pub screen_frame: AtomicU64,
     /// Game frame in which the cab's mark ([`CAB_MARK_WIDTH`]) was last drawn: the camera in the cab then.
     pub cab_frame: AtomicU64,
+    /// Game frame in which the parking camera's mark ([`PARKING_MARK_WIDTH`]) was last drawn: the game's parking
+    /// camera over WestPlay's screen then (0: not since the game started).
+    pub parking_frame: AtomicU64,
     /// Whether the truck the player is in is one WestPlay shows in, as the plugin last saw ([`TRUCK_SUPPORTED`],
     /// [`TRUCK_UNSUPPORTED`]; 0: not known yet, since the truck changed).
     pub truck_supported: AtomicU32,
@@ -274,7 +339,14 @@ pub struct PluginBlock {
     pub nearby: SeqLock<Nearby>,
     /// Each [`Keybind`]'s presses so far: the plugin counts them, the app acts on each new one.
     pub keybind_presses: [AtomicU32; KEYBIND_COUNT],
+    /// Each [`Keybind`]'s holds so far ([`KEYBIND_HOLD_MS`]: the volume keys held change the song), counted as
+    /// its presses are. A held key's press isn't counted: it's a hold.
+    pub keybind_holds: [AtomicU32; KEYBIND_COUNT],
 }
+
+/// How long (ms) a volume key held is a hold, not a press (owner 2026-11-13: one second, it was two): Volume up's the
+/// next song, Volume down's the one before (or the song's start, past its first seconds).
+pub const KEYBIND_HOLD_MS: u64 = 1000;
 
 /// The most of TruckersMP's players around the player the bridge carries (its streaming range holds far fewer).
 pub const NEARBY_MAX: usize = 128;
@@ -406,13 +478,22 @@ pub enum Keybind {
     VolumeUp = 0,
     VolumeDown = 1,
     PlayPause = 2,
+    /// The screen's brightness a step down and up (owner 2026-11-13: Alt+4 and Alt+5, shown as the volume is).
+    BrightnessDown = 3,
+    BrightnessUp = 4,
 }
 
 impl Keybind {
-    pub const ALL: [Keybind; KEYBIND_COUNT] = [Keybind::VolumeUp, Keybind::VolumeDown, Keybind::PlayPause];
+    pub const ALL: [Keybind; KEYBIND_COUNT] =
+        [Keybind::VolumeUp, Keybind::VolumeDown, Keybind::PlayPause, Keybind::BrightnessDown, Keybind::BrightnessUp];
+
+    /// Whether it can be held ([`KEYBIND_HOLD_MS`]): the volume keys, whose press then counts as they're let go.
+    pub fn holds(self) -> bool {
+        matches!(self, Keybind::VolumeUp | Keybind::VolumeDown)
+    }
 }
 
-pub const KEYBIND_COUNT: usize = 3;
+pub const KEYBIND_COUNT: usize = 5;
 
 /// A keybind as the bridge carries it: its key's virtual-key code, and whether it's pressed while holding the
 /// interaction key (using the screen) rather than alone.
@@ -648,6 +729,10 @@ pub struct TruckInfo {
     /// model's origin, which the speakers of a truck's parts are placed from (the host's speakers.rs).
     #[cfg_attr(feature = "serde", serde(skip))]
     pub head: [f32; 3],
+    /// How many axles it stands on: its wheels' places along it (`wheel.position`'s z), told apart. A coach's body
+    /// goes by it (each of the Coaches DLC's chassis fits one body only: two axles the short, three the long).
+    #[cfg_attr(feature = "serde", serde(skip))]
+    pub axles: u32,
     /// Its licence plate as the game shows it (`license.plate`), to find it among the save's vehicles.
     #[cfg_attr(feature = "serde", serde(skip))]
     pub plate: FixedStr<32>,
@@ -869,6 +954,15 @@ impl Drop for BridgeMapping {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn each_game_has_its_own_mod_and_tablet_list() {
+        // ETS2's named as before ATS: setups made before it keep theirs.
+        assert_eq!(super::mod_file("eut2"), "westplay.scs");
+        assert_eq!(super::tablet_apart_file("eut2"), "tablet_apart.txt");
+        assert_eq!(super::mod_file("ats"), "westplay_ats.scs");
+        assert_eq!(super::tablet_apart_file("ats"), "tablet_apart_ats.txt");
+    }
+
+    #[test]
     fn marks_a_vehicle_by_its_ids_hash_or_a_parts() {
         let marks =
             read_marks(&write_marks(&[cityhash::city_hash64(b"truckx"), cityhash::city_hash64(b"brand.model")]));
@@ -907,7 +1001,18 @@ mod tests {
         ] {
             assert_eq!(page_height(index(layout)), height, "{layout}");
         }
+        // The trucks' own screens, each its display's shape: 1280 x 784 is 1.633:1, 711 1.800 (1.801), 717 1.785
+        // (1.786), 731 1.751 (1.750).
+        for (layout, height) in
+            [("scania-2025", 784), ("scania-2025-advanced", 711), ("iveco-sway", 717), ("volvo-fh", 731)]
+        {
+            assert_eq!(page_height(index(layout)), height, "{layout}");
+        }
+        // The Coaches DLC's: 1280 x 730 is 1.753:1 (the Scania Touring's 1.754), 784 1.633 (the MAN Lion's Coach's).
+        assert_eq!(page_height(index("scania-touring")), 730);
+        assert_eq!(page_height(index("man-lions-24")), 784);
         assert_eq!(page_height(index("daf-2021")), SCREEN_HEIGHT);
+        assert_eq!(page_height(index("renault-t-2024")), SCREEN_HEIGHT);
         assert_eq!(page_height(screen_layouts().len()), SCREEN_HEIGHT);
     }
 
@@ -1003,6 +1108,7 @@ mod tests {
             id: FixedStr::new("vehicle.daf.2021"),
             name: FixedStr::new("XG+"),
             head: [-0.722, 1.696, 0.686],
+            axles: 3,
             plate: FixedStr::new("CA 324KD"),
             plate_country: FixedStr::new("italy"),
         };

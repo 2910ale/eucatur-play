@@ -11,26 +11,17 @@
 //! header's: within 1.7–2.9 m of the game's own bounds of `flats_close_01_be_lux` at four places in Berlin).
 
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::area;
 use crate::files::GameFiles;
 use crate::geometry::{Point, PrefabPlacement, join_lines, road_curve};
-use crate::sea::simplify_ring;
+use crate::pmd::Pmd;
+use crate::pmg::Pmg;
+use crate::sea::{contains, simplify_ring};
 use crate::sector::{ItemData, Node};
 use crate::terrain::region_outlines;
 use crate::world::{BuildingKind, BuildingModel, Map, Prefabs, StructureSet};
 
-/// A `.pmg`'s first word: the format's version (0x15), then "gmP".
-const PMG_MAGIC: u32 = 0x506d_6715;
-/// Where a `.pmg`'s box lies: its least corner, then its greatest.
-const BOX_AT: usize = 48;
-/// Where a `.pmg` says how many pieces it has (its meshes, one a material) and where their records are.
-const PIECE_COUNT_AT: usize = 4;
-const PIECES_AT: usize = 84;
-/// A piece's record: its index count (word 0), its vertex count (1), its vertices' stride (15), where its
-/// vertices' positions start (16: three floats each), where its indices start (24: u16, a triangle list).
-const PIECE_SIZE: usize = 100;
 /// Smaller than this on the ground (m², or on its narrow side, m) or lower than this (m): a prop, not a
 /// building (a car charger at a filling station, a booth's sign).
 const LEAST_AREA: f32 = 12.0;
@@ -43,6 +34,9 @@ const CANOPY_THICKNESS: f32 = 1.2;
 /// half a cell wider than the model).
 const CELL: f32 = 0.5;
 const MOST_CELLS: usize = 512;
+/// The most half cells a model's edge is walked in: a million (250 km or more), past any real model's; a longer edge
+/// can only be a damaged model's ([`Grid::cover`]).
+const MOST_EDGE_STEPS: f32 = 1_000_000.0;
 /// Lower than this (m): ground clutter (a yard's paving, kerbs), not the building.
 const LEAST_TOP: f32 = 1.5;
 /// Geometry reaching down to this (m) stands on the ground (a wall, a pillar); higher, it's over open ground
@@ -71,21 +65,11 @@ pub struct ModelBox {
 }
 
 /// A model's box from its `.pmg` (the model's `.pmd` path with `.pmg` for `.pmd`); `None` if it isn't a
-/// `.pmg` this reads.
+/// `.pmg` this reads ([`Pmg`]).
 pub fn model_box(pmg: &[u8]) -> Option<ModelBox> {
-    let word = |at: usize| word(pmg, at);
-    if word(0)? != PMG_MAGIC {
-        return None;
-    }
-    let float = |at: usize| word(at).map(f32::from_bits);
-    let corner = |at: usize| Some([float(at)?, float(at + 4)?, float(at + 8)?]);
-    let (min, max) = (corner(BOX_AT)?, corner(BOX_AT + 12)?);
+    let (min, max) = Pmg::read(pmg)?.model_box()?;
     let sane = min.iter().chain(&max).all(|v| v.is_finite()) && (0..3).all(|axis| min[axis] <= max[axis]);
     sane.then_some(ModelBox { min, max })
-}
-
-fn word(data: &[u8], at: usize) -> Option<u32> {
-    Some(u32::from_le_bytes(data.get(at..at.checked_add(4)?)?.try_into().ok()?))
 }
 
 /// A model's locator: a named place in it where something else is fitted (a truck interior's `int_rearwall`,
@@ -99,29 +83,15 @@ pub struct Locator {
     pub rotation: [f32; 4],
 }
 
-/// Where a `.pmg`'s locator records are (44 bytes each: a name, then the position at +8, the scale at +20 and the
-/// rotation at +24); each part's record says which of them are its.
-const LOCATORS_AT: usize = 80;
-const LOCATOR_SIZE: usize = 44;
-
-/// Every part's locators of a `.pmg`, in its order; `None` if it isn't a `.pmg` this reads.
+/// Every part's locators of a `.pmg`, in its order ([`Pmg::locator`]); `None` if it isn't a `.pmg` this reads.
 pub fn model_locators(pmg: &[u8]) -> Option<Vec<Locator>> {
-    let word = |at: usize| word(pmg, at);
-    if word(0)? != PMG_MAGIC {
-        return None;
-    }
-    let float = |at: usize| word(at).map(f32::from_bits);
-    let (parts, parts_at, locators_at) =
-        (word(PART_COUNT_AT)? as usize, word(PARTS_AT)? as usize, word(LOCATORS_AT)? as usize);
+    let model = Pmg::read(pmg)?;
     let mut locators = Vec::new();
-    for part in 0..parts {
-        let record = parts_at.checked_add(part.checked_mul(PART_SIZE)?)?;
-        let (count, first) = (word(record + 16)? as usize, word(record + 20)? as usize);
-        for index in first..first.checked_add(count)? {
-            let at = locators_at.checked_add(index.checked_mul(LOCATOR_SIZE)?)?;
-            let name = crate::token::token_to_string(u64::from(word(at)?) | u64::from(word(at + 4)?) << 32)?;
-            let position = [float(at + 8)?, float(at + 12)?, float(at + 16)?];
-            let rotation = [float(at + 24)?, float(at + 28)?, float(at + 32)?, float(at + 36)?];
+    for part in 0..model.part_count()? {
+        for index in model.part(part)?.locators {
+            let locator = model.locator(index)?;
+            let name = crate::token::token_to_string(locator.name)?;
+            let (position, rotation) = (locator.position, locator.rotation);
             if position.iter().chain(&rotation).any(|v| !v.is_finite()) {
                 return None;
             }
@@ -131,89 +101,50 @@ pub fn model_locators(pmg: &[u8]) -> Option<Vec<Locator>> {
     Some(locators)
 }
 
-/// A model's triangles (each three corners: x, y, z, metres, its own axes); `None` if its pieces don't add up.
+/// A model's triangles (each three corners: x, y, z, metres, its own axes); `None` if it isn't a model this reads, or
+/// its pieces' records aren't in the file (a piece or triangle that doesn't read is left out).
 pub fn model_triangles(pmg: &[u8]) -> Option<Vec<[[f32; 3]; 3]>> {
     shown_triangles(pmg, None)
 }
 
 /// [`model_triangles`] of only the pieces `shown` (by [`visible_pieces`]), or all.
 pub fn shown_triangles(pmg: &[u8], shown: Option<&[bool]>) -> Option<Vec<[[f32; 3]; 3]>> {
-    let word = |at: usize| word(pmg, at);
-    if word(0)? != PMG_MAGIC {
-        return None;
-    }
-    let (count, table) = (word(PIECE_COUNT_AT)? as usize, word(PIECES_AT)? as usize);
+    let model = Pmg::read(pmg)?;
     let mut triangles = Vec::new();
-    for piece in 0..count {
-        if shown.is_some_and(|shown| !shown.get(piece).copied().unwrap_or(true)) {
+    for index in 0..model.piece_count()? {
+        if shown.is_some_and(|shown| !shown.get(index).copied().unwrap_or(true)) {
             continue;
         }
-        let record = table.checked_add(piece.checked_mul(PIECE_SIZE)?)?;
-        let field = |index: usize| word(record + 4 * index).map(|value| value as usize);
-        let (indices, vertices, stride, positions, index_at) =
-            (field(0)?, field(1)?, field(15)?, field(16)?, field(24)?);
-        if stride < 12 || indices % 3 != 0 {
-            return None;
+        // A piece, or a triangle, that doesn't read is left out and the rest drawn, as surface/faces.rs does (it gave up
+        // the whole model, a building gone for one damaged piece: the review of 2026-11-11, M13; no real model has one,
+        // pmg_survey). Its triangles only as far as the file holds its indices (its count is the file's word).
+        let Some(piece) = model.piece(index) else { continue };
+        if piece.stride < 12 {
+            continue;
         }
-        let vertex = |index: usize| -> Option<[f32; 3]> {
-            if index >= vertices {
-                return None;
-            }
-            let at = positions.checked_add(index.checked_mul(stride)?)?;
-            Some([0, 4, 8].map(|offset| word(at + offset).map(f32::from_bits).unwrap_or(f32::NAN)))
-                .filter(|corner| corner.iter().all(|v| v.is_finite()))
-        };
-        let index = |which: usize| -> Option<usize> {
-            let at = index_at.checked_add(which * 2)?;
-            Some(u16::from_le_bytes(pmg.get(at..at + 2)?.try_into().ok()?) as usize)
-        };
-        for first in (0..indices).step_by(3) {
-            triangles.push([vertex(index(first)?)?, vertex(index(first + 1)?)?, vertex(index(first + 2)?)?]);
-        }
+        triangles.extend(model.triangles(&piece));
     }
     Some(triangles)
 }
 
-/// Where a `.pmg` says how many parts it has (its named groups of pieces) and where their records are: each
-/// 24 bytes, its name (a token), its piece count and its first piece, its locators' count and first.
-const PART_COUNT_AT: usize = 8;
-const PARTS_AT: usize = 76;
-const PART_SIZE: usize = 24;
-/// A `.pmd` (a model's descriptor, version 4): its counts at the start (version, materials, looks, pieces,
-/// variants, parts, attributes, the bytes of a variant's attribute values), then where its variants' names
-/// (tokens), its parts' attribute ranges (first, last + 1), its variants' values and its attributes (name,
-/// type, offset in a variant's values: 16 bytes each) are.
-const PMD_VERSION: u32 = 4;
-
 /// Which of a `.pmg`'s pieces `variant` (a token: the item's) shows, by its `.pmd`: each part's `visible`
 /// attribute in that variant. `None` if the descriptor doesn't read, or has no such variant (then all are).
 pub fn visible_pieces(pmd: &[u8], pmg: &[u8], variant: u64) -> Option<Vec<bool>> {
-    let header = |index: usize| word(pmd, 4 * index).map(|value| value as usize);
-    if word(pmd, 0)? != PMD_VERSION {
-        return None;
-    }
-    let (variants, parts, attributes, values_size) = (header(4)?, header(5)?, header(6)?, header(7)?);
-    let (variants_at, links_at, values_at, attributes_at) = (header(10)?, header(11)?, header(12)?, header(13)?);
-    let long = |at: usize| Some(u64::from(word(pmd, at)?) | u64::from(word(pmd, at + 4)?) << 32);
-    let chosen = (0..variants).find(|&v| long(variants_at + 8 * v) == Some(variant))?;
+    let pmd = Pmd::read(pmd)?;
+    let chosen = pmd.variant(variant)?;
     let visible_token = crate::token::string_to_token("visible")?;
-    let part_count = word(pmg, PART_COUNT_AT)? as usize;
-    if part_count != parts {
+    let model = Pmg::read(pmg)?;
+    if model.part_count()? != pmd.parts() {
         return None;
     }
-    let (pieces, parts_at) = (word(pmg, PIECE_COUNT_AT)? as usize, word(pmg, PARTS_AT)? as usize);
+    let pieces = model.piece_count()?;
     let mut shown = vec![true; pieces];
-    for part in 0..parts {
-        let (first, end) = (header_at(pmd, links_at + 8 * part)?, header_at(pmd, links_at + 8 * part + 4)?);
-        let visible = (first..end.min(attributes)).find(|&a| long(attributes_at + 16 * a) == Some(visible_token));
-        let Some(attribute) = visible else { continue };
-        let offset = word(pmd, attributes_at + 16 * attribute + 12)? as usize;
-        if word(pmd, values_at + chosen * values_size + offset)? != 0 {
+    for part in 0..pmd.parts() {
+        if pmd.part_visible(part, chosen, visible_token) != Some(false) {
             continue;
         }
-        let record = parts_at + PART_SIZE * part;
-        let (count, start) = (word(pmg, record + 8)? as usize, word(pmg, record + 12)? as usize);
-        let end = start.checked_add(count)?.min(pieces);
+        let range = model.part(part)?.pieces;
+        let (start, end) = (range.start, range.end.min(pieces));
         if start < end {
             shown[start..end].fill(false);
         }
@@ -221,31 +152,13 @@ pub fn visible_pieces(pmd: &[u8], pmg: &[u8], variant: u64) -> Option<Vec<bool>>
     Some(shown)
 }
 
-fn header_at(data: &[u8], at: usize) -> Option<usize> {
-    word(data, at).map(|value| value as usize)
-}
-
-/// Where a `.pmd` says where its materials' table is (each a path's place in the file, its first look's
-/// first), and where a `.pmg` piece's record holds its material.
-const PMD_MATERIALS_AT: usize = 56;
-const PIECE_MATERIAL_AT: usize = 16;
 /// Effects whose pieces aren't drawn: a collision mesh (`eut2.none`), a shadow's (`eut2.shadowonly`). A
 /// prefab's reach under its whole yard and down its sides (`garage_sc`'s to 6 m below it).
 const UNSEEN_EFFECTS: [&str; 2] = ["eut2.none", "eut2.shadowonly"];
 
 /// A `.pmd`'s materials, its first look's: their `.mat` paths.
 pub fn pmd_materials(pmd: &[u8]) -> Vec<String> {
-    if word(pmd, 0) != Some(PMD_VERSION) {
-        return Vec::new();
-    }
-    let (Some(count), Some(table)) = (header_at(pmd, 4), header_at(pmd, PMD_MATERIALS_AT)) else { return Vec::new() };
-    (0..count)
-        .filter_map(|material| {
-            let rest = pmd.get(header_at(pmd, table + 4 * material)?..)?;
-            let end = rest.iter().position(|&byte| byte == 0)?;
-            Some(String::from_utf8_lossy(&rest[..end]).into_owned())
-        })
-        .collect()
+    Pmd::read(pmd).map_or_else(Vec::new, |pmd| pmd.materials(None))
 }
 
 /// Whether a `.mat`'s effect (`effect : "eut2.none.rfx" {`, or `material : "…"` in the older form) is one
@@ -258,29 +171,43 @@ pub fn unseen_material(mat: &str) -> bool {
         .any(|unseen| effect == *unseen || effect.strip_prefix(unseen).is_some_and(|rest| rest.starts_with('.')))
 }
 
+/// Whether each material isn't drawn ([`unseen_material`]), by its path: kept for a whole map's models (prefabs share
+/// their materials), from any thread. (Each model had a cache of its own, which kept nothing: the review of
+/// 2026-11-11, M10.)
+#[derive(Default)]
+pub struct UnseenMaterials(std::sync::Mutex<HashMap<String, bool>>);
+
+impl UnseenMaterials {
+    /// Whether the material at `path` isn't drawn (read once; one that can't be read is drawn).
+    fn unseen(&self, files: &GameFiles, path: String) -> bool {
+        if let Some(&known) = self.0.lock().unwrap_or_else(|e| e.into_inner()).get(&path) {
+            return known;
+        }
+        // Read outside the lock: the answer is the file's, whichever thread finds it first.
+        let read = files.read(&path).ok().flatten();
+        let unseen = read.is_some_and(|mat| unseen_material(&String::from_utf8_lossy(&mat)));
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).insert(path, unseen);
+        unseen
+    }
+}
+
 /// Which of a prefab model's pieces are seen in its item's `variant`: those the variant shows
 /// ([`visible_pieces`]; all if its `.pmd` at `pmd_path` doesn't say) and drawn ([`UNSEEN_EFFECTS`]; each
-/// material's answer kept in `unseen`, as prefabs share them). `None` if the `.pmg` doesn't read.
+/// material's answer kept in `unseen`). `None` if the `.pmg` doesn't read.
 pub fn seen_pieces(
     files: &GameFiles,
     pmd_path: &str,
     pmg: &[u8],
     variant: u64,
-    unseen: &mut HashMap<String, bool>,
+    unseen: &UnseenMaterials,
 ) -> Option<Vec<bool>> {
-    let (pieces, table) = (word(pmg, PIECE_COUNT_AT)? as usize, word(pmg, PIECES_AT)? as usize);
+    let model = Pmg::read(pmg)?;
+    let pieces = model.piece_count()?;
     let pmd = files.read(pmd_path).ok().flatten().unwrap_or_default();
     let mut seen = visible_pieces(&pmd, pmg, variant).unwrap_or_else(|| vec![true; pieces]);
-    let unseen: Vec<bool> = pmd_materials(&pmd)
-        .into_iter()
-        .map(|path| {
-            *unseen.entry(path).or_insert_with_key(|path| {
-                files.read(path).ok().flatten().is_some_and(|mat| unseen_material(&String::from_utf8_lossy(&mat)))
-            })
-        })
-        .collect();
+    let unseen: Vec<bool> = pmd_materials(&pmd).into_iter().map(|path| unseen.unseen(files, path)).collect();
     for (piece, seen) in seen.iter_mut().enumerate() {
-        let material = word(pmg, table + PIECE_SIZE * piece + PIECE_MATERIAL_AT).map(|material| material as usize);
+        let material = model.material(piece);
         if material.and_then(|material| unseen.get(material)).copied().unwrap_or(false) {
             *seen = false;
         }
@@ -306,8 +233,20 @@ pub struct ModelShape {
 
 /// A model's shape from its `.pmg`; `None` if it isn't a `.pmg` this reads.
 pub fn model_shape(pmg: &[u8]) -> Option<ModelShape> {
+    shape_over(pmg, Ground::Level)
+}
+
+/// Whether a model is a bridge or a piece of one, of those drawn as buildings: the game files them among its
+/// landmarks (`/model2/landmark/no/alta_bridge_01_poc.pmd`, `.../chemnitz_viaduct_01_ger.pmd`,
+/// `.../kiel_overpass_01_de.pmd`; ATS's `panorama/ca_san_francisco/ca_sf_ggb_pillar_1.pmd`, the Golden Gate's tower,
+/// and `ca_sf_ggb_abutment_1.pmd`).
+pub fn is_bridge(path: &str) -> bool {
+    path.rsplit('/').next().is_some_and(|file| ["bridge", "viaduct", "overpass", "pillar", "abutment"].iter().any(|name| file.contains(name)))
+}
+
+fn shape_over(pmg: &[u8], ground: Ground) -> Option<ModelShape> {
     let model_box = model_box(pmg)?;
-    let parts = model_triangles(pmg).map(|triangles| trace(&model_box, &triangles, Ground::Level)).unwrap_or_default();
+    let parts = model_triangles(pmg).map(|triangles| trace(&model_box, &triangles, ground)).unwrap_or_default();
     Some(ModelShape { model_box, parts })
 }
 
@@ -335,7 +274,7 @@ pub enum Ground {
 }
 
 /// A part thinner than this (m: twice its area over its outline's length, about its width) is left out of a
-/// prefab's shape: a fence, a wall, a hedge, a barrier.
+/// prefab's shape: a fence, a wall, a hedge, a barrier; and a lifted one of a bridge's: a cable.
 const LEAST_THICKNESS: f32 = 1.5;
 /// Of a prefab's parts, this many of the largest are kept (a service area's shop, workshop, canopies…).
 const MOST_PREFAB_PARTS: usize = 12;
@@ -347,6 +286,7 @@ const THIN_REACH: f32 = 1.0;
 const ROAD_REACH: f32 = 6.0;
 
 /// A model's grid from above: cells `cell` m a side from (`x0`, `z0`), `cols` × `rows`.
+#[derive(Clone, Copy)]
 struct Grid {
     cell: f32,
     x0: f32,
@@ -356,6 +296,37 @@ struct Grid {
 }
 
 impl Grid {
+    /// The grid a model's shape is traced on.
+    fn over(model_box: &ModelBox) -> Self {
+        let span = (model_box.max[0] - model_box.min[0]).max(model_box.max[2] - model_box.min[2]);
+        let cell = CELL.max(span / MOST_CELLS as f32);
+        let (x0, z0) = (model_box.min[0] - cell / 2.0, model_box.min[2] - cell / 2.0);
+        let cols = ((model_box.max[0] - x0) / cell).floor() as usize + 1;
+        let rows = ((model_box.max[2] - z0) / cell).floor() as usize + 1;
+        Grid { cell, x0, z0, cols, rows }
+    }
+
+    /// Where the segment from `p` to `q` (x, z) is on the grid, as shares of its length (first, last); `None` if it
+    /// never is. The grid's edge is taken a cell further out all round, so no point on it is missed by a hair.
+    fn crossing(&self, p: [f32; 2], q: [f32; 2]) -> Option<(f32, f32)> {
+        let low = [self.x0 - self.cell, self.z0 - self.cell];
+        let high = [self.x0 + (self.cols + 1) as f32 * self.cell, self.z0 + (self.rows + 1) as f32 * self.cell];
+        let (mut enter, mut exit) = (0.0f32, 1.0f32);
+        for axis in 0..2 {
+            let along = q[axis] - p[axis];
+            if along == 0.0 {
+                if p[axis] < low[axis] || p[axis] > high[axis] {
+                    return None;
+                }
+                continue;
+            }
+            let (a, b) = ((low[axis] - p[axis]) / along, (high[axis] - p[axis]) / along);
+            enter = enter.max(a.min(b));
+            exit = exit.min(a.max(b));
+        }
+        (enter <= exit).then_some((enter, exit))
+    }
+
     fn cell_of(&self, x: f32, z: f32) -> Option<usize> {
         let (col, row) = (((x - self.x0) / self.cell).floor(), ((z - self.z0) / self.cell).floor());
         (col >= 0.0 && row >= 0.0 && col < self.cols as f32 && row < self.rows as f32)
@@ -365,15 +336,13 @@ impl Grid {
     /// Each triangle's heights over the cells it covers, to `mark` (cell, lowest, highest).
     fn cover(&self, triangles: &[[[f32; 3]; 3]], mark: &mut dyn FnMut(usize, f32, f32)) {
         let (cell, x0, z0) = (self.cell, self.x0, self.z0);
-        let mut at = |x: f32, z: f32, y0: f32, y1: f32| {
-            if let Some(i) = self.cell_of(x, z) {
-                mark(i, y0.min(y1), y0.max(y1));
-            }
-        };
+        let mut heights: Vec<(usize, f32)> = Vec::new();
         for [a, b, c] in triangles {
             let (low_y, high_y) = (a[1].min(b[1]).min(c[1]), a[1].max(b[1]).max(c[1]));
             // Steep (a wall, a pillar's side: its face more than 60° from level): every cell it crosses, its
-            // whole height there taken as its height overall. Its edges seen from above, a point every half cell.
+            // whole height there taken as its height overall; on a bridge, as low and as high as it is there: a
+            // cable falling away isn't as high as its top all along. Its edges seen from above, a point every half
+            // cell.
             let normal = [
                 (b[1] - a[1]) * (c[2] - a[2]) - (b[2] - a[2]) * (c[1] - a[1]),
                 (b[2] - a[2]) * (c[0] - a[0]) - (b[0] - a[0]) * (c[2] - a[2]),
@@ -382,46 +351,71 @@ impl Grid {
             let length = (normal[0] * normal[0] + normal[1] * normal[1] + normal[2] * normal[2]).sqrt();
             let steep = normal[1].abs() < 0.5 * length;
             for (p, q) in [(a, b), (b, c), (c, a)] {
-                let steps = (((q[0] - p[0]).hypot(q[2] - p[2])) / (cell * 0.5)).ceil().max(1.0) as usize;
-                for k in 0..=steps {
-                    let t = k as f32 / steps as f32;
-                    let (x, z) = (p[0] + (q[0] - p[0]) * t, p[2] + (q[2] - p[2]) * t);
-                    if steep {
-                        at(x, z, low_y, high_y);
-                    } else {
-                        let y = p[1] + (q[1] - p[1]) * t;
-                        at(x, z, y, y);
+                // Only the points of the edge on the grid (a damaged model's vertex 1e38 away made the walk to it
+                // endless: the review of 2026-11-11, M6, the fuzzing of 2026-11-12).
+                let Some((enter, exit)) = self.crossing([p[0], p[2]], [q[0], q[2]]) else { continue };
+                let span = (((q[0] - p[0]).hypot(q[2] - p[2])) / (cell * 0.5)).ceil().max(1.0);
+                let mut at = |t: f32| {
+                    if let Some(i) = self.cell_of(p[0] + (q[0] - p[0]) * t, p[2] + (q[2] - p[2]) * t) {
+                        heights.push((i, p[1] + (q[1] - p[1]) * t));
+                    }
+                };
+                if span <= MOST_EDGE_STEPS {
+                    // The stretch on the grid, its points where they always were (each a half cell along the whole
+                    // edge from its start): an edge on the grid, every one.
+                    let steps = span as usize;
+                    let first = ((enter * span).floor().max(0.0) as usize).saturating_sub(1);
+                    let last = ((exit * span).ceil() as usize).saturating_add(1).min(steps);
+                    for k in first..=last {
+                        at(k as f32 / steps as f32);
+                    }
+                } else {
+                    // Longer than any model (a damaged one's): too long for its share on the grid to be told in
+                    // halves of a cell along it, so the stretch on the grid is walked a half cell at a time.
+                    let length = (exit - enter) * (q[0] - p[0]).hypot(q[2] - p[2]);
+                    let steps = (length / (cell * 0.5)).ceil().clamp(1.0, MOST_EDGE_STEPS) as usize;
+                    for k in 0..=steps {
+                        at(enter + (exit - enter) * (k as f32 / steps as f32));
                     }
                 }
             }
             // Its face from above: every cell whose middle it covers, at its height there (a roof), or its
             // whole height (steep).
             let area = (b[0] - a[0]) * (c[2] - a[2]) - (c[0] - a[0]) * (b[2] - a[2]);
-            if area.abs() < 1e-6 {
-                continue;
-            }
             let (min_x, max_x) = (a[0].min(b[0]).min(c[0]), a[0].max(b[0]).max(c[0]));
             let (min_z, max_z) = (a[2].min(b[2]).min(c[2]), a[2].max(b[2]).max(c[2]));
             let first_col = (((min_x - x0) / cell).floor().max(0.0)) as usize;
             let first_row = (((min_z - z0) / cell).floor().max(0.0)) as usize;
             let last_col = (((max_x - x0) / cell).floor().max(0.0) as usize).min(self.cols - 1);
             let last_row = (((max_z - z0) / cell).floor().max(0.0) as usize).min(self.rows - 1);
-            for row in first_row..=last_row {
-                for col in first_col..=last_col {
-                    let (x, z) = (x0 + (col as f32 + 0.5) * cell, z0 + (row as f32 + 0.5) * cell);
-                    let wb = ((b[0] - x) * (c[2] - z) - (c[0] - x) * (b[2] - z)) / area;
-                    let wc = ((c[0] - x) * (a[2] - z) - (a[0] - x) * (c[2] - z)) / area;
-                    let wa = 1.0 - wb - wc;
-                    if wa >= 0.0 && wb >= 0.0 && wc >= 0.0 {
-                        if steep {
-                            at(x, z, low_y, high_y);
-                        } else {
-                            let y = wa * a[1] + wb * b[1] + wc * c[1];
-                            at(x, z, y, y);
+            if area.abs() >= 1e-6 {
+                for row in first_row..=last_row {
+                    for col in first_col..=last_col {
+                        let (x, z) = (x0 + (col as f32 + 0.5) * cell, z0 + (row as f32 + 0.5) * cell);
+                        let wb = ((b[0] - x) * (c[2] - z) - (c[0] - x) * (b[2] - z)) / area;
+                        let wc = ((c[0] - x) * (a[2] - z) - (a[0] - x) * (c[2] - z)) / area;
+                        let wa = 1.0 - wb - wc;
+                        if wa >= 0.0
+                            && wb >= 0.0
+                            && wc >= 0.0
+                            && let Some(i) = self.cell_of(x, z)
+                        {
+                            heights.push((i, wa * a[1] + wb * b[1] + wc * c[1]));
                         }
                     }
                 }
             }
+            if steep {
+                heights.sort_unstable_by_key(|&(i, _)| i);
+                for run in heights.chunk_by(|a, b| a.0 == b.0) {
+                    mark(run[0].0, low_y, high_y);
+                }
+            } else {
+                for &(i, y) in &heights {
+                    mark(i, y, y);
+                }
+            }
+            heights.clear();
         }
     }
 
@@ -484,24 +478,50 @@ impl Grid {
     }
 }
 
+/// A model's ground under each place of it ([`Ground`]): the model's 0, or, for a prefab's, its own as [`trace`] finds it.
+pub struct Levels {
+    grid: Grid,
+    levels: Option<Vec<f32>>,
+}
+
+impl Levels {
+    pub fn new(model_box: &ModelBox, triangles: &[[[f32; 3]; 3]], ground: Ground) -> Self {
+        let grid = Grid::over(model_box);
+        let levels = match ground {
+            Ground::Own(road) => Some(grid.own_ground(triangles, road)),
+            Ground::Level => None,
+        };
+        Self { grid, levels }
+    }
+
+    /// The ground's height at (x, z), the model's own space: the nearest cell's, off its grid.
+    pub fn at(&self, x: f32, z: f32) -> f32 {
+        let Some(levels) = &self.levels else { return 0.0 };
+        let Grid { cell, x0, z0, cols, rows, .. } = self.grid;
+        let col = (((x - x0) / cell).floor().max(0.0) as usize).min(cols - 1);
+        let row = (((z - z0) / cell).floor().max(0.0) as usize).min(rows - 1);
+        levels[row * cols + col]
+    }
+}
+
 /// The parts of a model from above (see the module's notes): its triangles on a grid, each cell which heights
 /// the model is at over it (a column of [`HEIGHT_STEPS`], over `ground`); in each cell, what stands on the
 /// ground (up to the first gap) and what's lifted above it; cells of like bottoms and tops traced as outlines.
 pub fn trace(model_box: &ModelBox, triangles: &[[[f32; 3]; 3]], ground: Ground) -> Vec<ShapePart> {
-    let span = (model_box.max[0] - model_box.min[0]).max(model_box.max[2] - model_box.min[2]);
-    let cell = CELL.max(span / MOST_CELLS as f32);
-    let (x0, z0) = (model_box.min[0] - cell / 2.0, model_box.min[2] - cell / 2.0);
-    let cols = ((model_box.max[0] - x0) / cell).floor() as usize + 1;
-    let rows = ((model_box.max[2] - z0) / cell).floor() as usize + 1;
-    let grid = Grid { cell, x0, z0, cols, rows };
+    trace_levelled(model_box, triangles, ground).0
+}
+
+/// [`trace`], and the ground's levels it measured from ([`Levels`]: what stands on them is kept by them too, once
+/// worked out, not twice: the review of 2026-11-11, M10).
+pub fn trace_levelled(model_box: &ModelBox, triangles: &[[[f32; 3]; 3]], ground: Ground) -> (Vec<ShapePart>, Levels) {
+    let grid = Grid::over(model_box);
+    let Grid { cell, x0, z0, cols, rows, .. } = grid;
     let own = matches!(ground, Ground::Own(_));
-    // Each cell's ground: the model's 0, or its own.
-    let levels = match ground {
-        Ground::Level => None,
-        Ground::Own(road) => Some(grid.own_ground(triangles, road)),
-    };
+    // Each cell's ground: the model's 0, or its own (on the same grid).
+    let levelled = Levels::new(model_box, triangles, ground);
+    let levels = &levelled.levels;
     let level = |i: usize| levels.as_ref().map_or(0.0, |levels| levels[i]);
-    let reach = match &levels {
+    let reach = match levels {
         None => model_box.max[1],
         Some(levels) => levels.iter().map(|level| model_box.max[1] - level).fold(0.0, f32::max),
     };
@@ -672,7 +692,8 @@ pub fn trace(model_box: &ModelBox, triangles: &[[[f32; 3]; 3]], ground: Ground) 
             }
         }
     }
-    // Bands of like tops and like bottoms: a new one where the next is further up than a step.
+    // Bands of like tops and like bottoms: a new one where the next is further up than a step from the band's top.
+    let from = |band: &(f32, f32)| band.1;
     let bands = |values: Vec<f32>| -> Vec<(f32, f32)> {
         let mut values = values;
         values.sort_by(f32::total_cmp);
@@ -680,7 +701,7 @@ pub fn trace(model_box: &ModelBox, triangles: &[[[f32; 3]; 3]], ground: Ground) 
         let mut bands: Vec<(f32, f32)> = Vec::new();
         for value in values {
             match bands.last_mut() {
-                Some(band) if value - band.1 <= (0.1 * band.1).max(LEAST_TOP) => band.1 = value,
+                Some(band) if value - from(band) <= (0.1 * from(band)).max(LEAST_TOP) => band.1 = value,
                 _ => bands.push((value, value)),
             }
         }
@@ -728,7 +749,32 @@ pub fn trace(model_box: &ModelBox, triangles: &[[[f32; 3]; 3]], ground: Ground) 
     }
     parts.sort_by(|a, b| b.0.total_cmp(&a.0));
     parts.truncate(if own { MOST_PREFAB_PARTS } else { MOST_PARTS });
-    parts.into_iter().map(|(_, part)| part).collect()
+    let mut parts: Vec<ShapePart> = parts.into_iter().map(|(_, part)| part).collect();
+    // A part left out leaves its hole in what's round it, and the map would show through a solid roof. A hole is open
+    // ground, a courtyard, only if the model has nothing there, or a part that's kept.
+    let covers = |part: &ShapePart, p: Point| contains(&part.rings[0], p) && !part.rings[1..].iter().any(|hole| contains(hole, p));
+    for index in 0..parts.len() {
+        let left_out = |hole: &Vec<Point>| {
+            let ([x_low, z_low], [x_high, z_high]) = hole.iter().fold(([f32::MAX; 2], [f32::MIN; 2]), |(low, high), p| {
+                ([low[0].min(p[0]), low[1].min(p[1])], [high[0].max(p[0]), high[1].max(p[1])])
+            });
+            let (mut all, mut lost) = (0, 0);
+            for row in ((z_low - z0) / cell) as usize..=(((z_high - z0) / cell) as usize).min(rows - 1) {
+                for col in ((x_low - x0) / cell) as usize..=(((x_high - x0) / cell) as usize).min(cols - 1) {
+                    let p = [x0 + (col as f32 + 0.5) * cell, z0 + (row as f32 + 0.5) * cell];
+                    if contains(hole, p) {
+                        all += 1;
+                        lost += usize::from(solid[at(row, col)] && !parts.iter().enumerate().any(|(other, part)| other != index && covers(part, p)));
+                    }
+                }
+            }
+            lost * 2 > all
+        };
+        let kept: Vec<Vec<Point>> = parts[index].rings[1..].iter().filter(|hole| !left_out(hole)).cloned().collect();
+        parts[index].rings.truncate(1);
+        parts[index].rings.extend(kept);
+    }
+    (parts, levelled)
 }
 
 /// The cells of `mask` (`rows` × `cols`) left once worn away by `reach` cells all round and grown back as far:
@@ -772,14 +818,15 @@ fn ring_length(ring: &[Point]) -> f32 {
     ring.iter().zip(ring.iter().cycle().skip(1)).map(|(a, b)| (b[0] - a[0]).hypot(b[1] - a[1])).sum()
 }
 
-/// A ring's area (m², either way round).
+/// A ring's area (m², either way round): in f64 from its first point ([`crate::sea::signed_area`]; in f32 from the
+/// map's middle, a building's was off by thousands of m² 100 km out).
 fn ring_area(ring: &[Point]) -> f32 {
-    let twice: f32 = ring.iter().zip(ring.iter().cycle().skip(1)).map(|(a, b)| a[0] * b[1] - b[0] * a[1]).sum();
-    twice.abs() / 2.0
+    (crate::sea::signed_area(ring).abs() / 2.0) as f32
 }
 
 /// A building placed on the map, a part of it: its outline and holes (metres: x east, z south), how high it
-/// reaches and where it starts above the ground, what kind, and its item's uid.
+/// reaches and where it starts above the ground, what kind, and its item's uid; how high in the game the ground
+/// it stands on is, and whether it's a part of a bridge.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Building {
     pub rings: Vec<Vec<Point>>,
@@ -787,6 +834,8 @@ pub struct Building {
     pub base: f32,
     pub kind: BuildingKind,
     pub uid: u64,
+    pub ground: f32,
+    pub bridge: bool,
 }
 
 /// A building's shape placed at `node`, scaled by `scale`: its parts (its box's, if it has none); none if it's
@@ -816,7 +865,7 @@ pub fn place(shape: &ModelShape, node: &Node, scale: [f32; 3], kind: BuildingKin
             _ => 0.0,
         };
         let ring = [[x0, z0], [x1, z0], [x1, z1], [x0, z1]].map(at).to_vec();
-        return vec![Building { rings: vec![ring], height, base, kind, uid }];
+        return vec![Building { rings: vec![ring], height, base, kind, uid, ground: node.position[1], bridge: false }];
     }
     shape
         .parts
@@ -836,6 +885,8 @@ pub fn place(shape: &ModelShape, node: &Node, scale: [f32; 3], kind: BuildingKin
                 kind
             },
             uid,
+            ground: node.position[1],
+            bridge: false,
         })
         .collect()
 }
@@ -895,7 +946,7 @@ pub fn prefab_placements(map: &Map, prefabs: &mut Prefabs, bounds: [f32; 4]) -> 
         .collect();
     let mut placements = Vec::new();
     for item in &map.items {
-        let ItemData::Prefab { flags, model, variant, nodes, origin } = &item.data else { continue };
+        let ItemData::Prefab { flags, model, variant, nodes, origin, .. } = &item.data else { continue };
         if flags.hidden || flags.secret {
             continue;
         }
@@ -922,100 +973,6 @@ pub fn prefab_placements(map: &Map, prefabs: &mut Prefabs, bounds: [f32; 4]) -> 
     placements
 }
 
-/// Every building of `map` within `bounds` (`[x0, z0, x1, z1]`), from the models' files in `files` (each
-/// read once). Buildings whose model can't be read are left out.
-pub fn buildings(
-    map: &Map,
-    models: &HashMap<u64, BuildingModel>,
-    files: &GameFiles,
-    bounds: [f32; 4],
-) -> Vec<Building> {
-    let mut out = Vec::new();
-    each_building(map, models, files, bounds, &mut |building| out.push(building));
-    out
-}
-
-/// [`buildings`], each handed to `out` as it's placed.
-pub fn each_building(
-    map: &Map,
-    models: &HashMap<u64, BuildingModel>,
-    files: &GameFiles,
-    bounds: [f32; 4],
-    out: &mut dyn FnMut(Building),
-) {
-    each_placed(&placements(map, models, bounds), models, &HashMap::new(), files, out);
-}
-
-/// The buildings `placements` places, each handed to `out` as it's placed (the export makes it its tile
-/// feature at once: held as both, a whole map's took 0.7 GB more at its peak). Each model's shape is worked
-/// out first, on every core (thousands of models, each traced from its triangles), then they're placed in
-/// order.
-pub fn each_placed(
-    placements: &[Placement],
-    models: &HashMap<u64, BuildingModel>,
-    prefab_models: &HashMap<u64, String>,
-    files: &GameFiles,
-    out: &mut dyn FnMut(Building),
-) {
-    let mut building_models: Vec<u64> =
-        placements.iter().filter(|placed| placed.prefab.is_none()).map(|placed| placed.model).collect();
-    building_models.sort_unstable();
-    building_models.dedup();
-    let shapes: HashMap<u64, ModelShape> = on_every_core(&building_models, |&model| {
-        let shape = models.get(&model).and_then(|building| {
-            let pmg = building.path.strip_suffix(".pmd").map(|stem| format!("{stem}.pmg"))?;
-            model_shape(&files.read(&pmg).ok()??)
-        });
-        shape.map(|shape| (model, shape)).into_iter().collect()
-    });
-    // A place's prefab: its shape in each variant placed (most show the same pieces: traced once), on its own
-    // ground found from where its road enters it (the same for all its variants).
-    let mut variants: BTreeMap<u64, (Vec<u64>, [f32; 3])> = BTreeMap::new();
-    for placed in placements {
-        if let Some(PrefabLook { variant, road }) = placed.prefab {
-            let (used, _) = variants.entry(placed.model).or_insert((Vec::new(), road));
-            if !used.contains(&variant) {
-                used.push(variant);
-            }
-        }
-    }
-    let jobs: Vec<(u64, Vec<u64>, [f32; 3])> =
-        variants.into_iter().map(|(model, (used, road))| (model, used, road)).collect();
-    let prefab_shapes: HashMap<(u64, u64), ModelShape> = on_every_core(&jobs, |(model, used, road)| {
-        let Some(path) = prefab_models.get(model) else { return Vec::new() };
-        let pmg = path.strip_suffix(".pmd").and_then(|stem| files.read(&format!("{stem}.pmg")).ok()?);
-        let Some(pmg) = pmg else { return Vec::new() };
-        let mut unseen = HashMap::new();
-        let mut traced: HashMap<Option<Vec<bool>>, Option<ModelShape>> = HashMap::new();
-        used.iter()
-            .filter_map(|&variant| {
-                let seen = seen_pieces(files, path, &pmg, variant, &mut unseen);
-                let shape = traced.entry(seen).or_insert_with_key(|seen| prefab_shape(&pmg, seen.as_deref(), *road));
-                Some(((*model, variant), shape.clone()?))
-            })
-            .collect()
-    });
-    for placed in placements {
-        let (shape, kind) = match placed.prefab {
-            // Nothing where it has no parts (a filling station's price sign alone), never its box (the whole
-            // yard).
-            Some(PrefabLook { variant, .. }) => (
-                prefab_shapes.get(&(placed.model, variant)).filter(|shape| !shape.parts.is_empty()),
-                BuildingKind::Building,
-            ),
-            None => {
-                let Some(building) = models.get(&placed.model) else { continue };
-                (shapes.get(&placed.model), building.kind)
-            }
-        };
-        if let Some(shape) = shape {
-            for raised in place(shape, &placed.node, placed.scale, kind, placed.uid) {
-                out(raised);
-            }
-        }
-    }
-}
-
 /// How far apart two walls' ends may be and still meet (m): a structure set's corner piece (`left90`) ends a
 /// wall a metre or so from where the next starts.
 const WALL_SNAP: f32 = 2.0;
@@ -1040,29 +997,39 @@ pub fn structure_buildings(
     files: &GameFiles,
     bounds: [f32; 4],
 ) -> Vec<Building> {
-    let mut heights: HashMap<(u64, u64), Option<f32>> = HashMap::new();
+    // Each set's walls' heights in each variation they're in, on the build's threads (one set at a time, before:
+    // the review of 2026-11-11, minor 8).
+    let unseen = UnseenMaterials::default();
+    let mut pairs: Vec<(u64, u64)> = map
+        .walls
+        .iter()
+        .filter(|wall| sets.contains_key(&wall.model))
+        .map(|wall| (wall.model, wall.variation))
+        .collect();
+    pairs.sort_unstable();
+    pairs.dedup();
+    let height = |&(model, variation): &(u64, u64)| wall_height(&sets[&model], variation, files, &unseen);
+    let found = crate::threads::in_order_telling(&pairs, 1, height, &mut |_| {});
+    let heights: HashMap<(u64, u64), Option<f32>> = pairs.into_iter().zip(found).collect();
     // Each set's walls joined on their own: a mall's fronts run along a warehouse set's walls, their ends
     // meeting at the same places (one taken for the other, neither closed).
     let mut by_set: BTreeMap<u64, (Vec<Vec<Point>>, Vec<Wall>)> = BTreeMap::new();
     for wall in &map.walls {
         let (Some(start), Some(end)) = (map.nodes.get(&wall.start), map.nodes.get(&wall.end)) else { continue };
-        let Some(set) = sets.get(&wall.model) else { continue };
-        let height =
-            *heights.entry((wall.model, wall.variation)).or_insert_with(|| wall_height(set, wall.variation, files));
-        let Some(height) = height else { continue };
+        let Some(height) = heights.get(&(wall.model, wall.variation)).copied().flatten() else { continue };
         let (lines, walls) = by_set.entry(wall.model).or_default();
         lines.push(road_curve(start, end));
-        walls.push((wall.uid, height, [start.position[0], start.position[2]]));
+        walls.push((wall.uid, height, [start.position[0], start.position[2]], start.position[1]));
     }
-    let mut buildings = Vec::new();
-    for (lines, walls) in by_set.values() {
-        buildings.extend(set_buildings(lines, walls, bounds));
-    }
-    buildings
+    // And each set's buildings, on the threads too, in the sets' order.
+    let sets: Vec<&(Vec<Vec<Point>>, Vec<Wall>)> = by_set.values().collect();
+    let each = |(lines, walls): &&(Vec<Vec<Point>>, Vec<Wall>)| set_buildings(lines, walls, bounds);
+    crate::threads::in_order_telling(&sets, 1, each, &mut |_| {}).into_iter().flatten().collect()
 }
 
-/// A structure set's wall as its buildings need it: its item's uid, its height, where it starts.
-type Wall = (u64, f32, Point);
+/// A structure set's wall as its buildings need it: its item's uid, its height, where it starts, and how high
+/// that is in the game.
+type Wall = (u64, f32, Point, f32);
 
 /// The buildings one structure set's walls make (`lines`, and each wall's [`Wall`]): see
 /// [`structure_buildings`].
@@ -1071,7 +1038,7 @@ fn set_buildings(lines: &[Vec<Point>], walls: &[Wall], bounds: [f32; 4]) -> Vec<
     for line in join_lines(lines, WALL_SNAP) {
         let Some(ring) = close_run(&line.points, line.pieces.len()) else { continue };
         let ring = simplify_ring(&ring, OUTLINE_TOLERANCE);
-        let (uid, _, at) = walls[line.pieces[0]];
+        let (uid, _, at, ground) = walls[line.pieces[0]];
         if ring.len() < 3
             || ring_area(&ring) < LEAST_AREA
             || at[0] < bounds[0]
@@ -1082,7 +1049,7 @@ fn set_buildings(lines: &[Vec<Point>], walls: &[Wall], bounds: [f32; 4]) -> Vec<
             continue;
         }
         let height = line.pieces.iter().map(|&piece| walls[piece].1).fold(0.0, f32::max);
-        buildings.push(Building { rings: vec![ring], height, base: 0.0, kind: BuildingKind::Building, uid });
+        buildings.push(Building { rings: vec![ring], height, base: 0.0, kind: BuildingKind::Building, uid, ground, bridge: false });
     }
     buildings
 }
@@ -1132,18 +1099,16 @@ pub fn close_run(points: &[Point], walls: usize) -> Option<Vec<Point>> {
 /// How high a structure set's wall in `variation` stands over its curve (m): the top of its variation's parts'
 /// pieces (those drawn: [`seen_pieces`]), or of its whole model where the variation names none of its parts;
 /// `None` if its model doesn't read.
-fn wall_height(set: &StructureSet, variation: u64, files: &GameFiles) -> Option<f32> {
+fn wall_height(set: &StructureSet, variation: u64, files: &GameFiles, unseen: &UnseenMaterials) -> Option<f32> {
     let pmg = files.read(&format!("{}.pmg", set.path.strip_suffix(".pmd")?)).ok()??;
-    let mut shown = seen_pieces(files, &set.path, &pmg, 0, &mut HashMap::new())?;
+    let mut shown = seen_pieces(files, &set.path, &pmg, 0, unseen)?;
     if let Some(parts) = set.variations.get(&variation) {
-        let (count, table) = (word(&pmg, PART_COUNT_AT)? as usize, word(&pmg, PARTS_AT)? as usize);
+        let model = Pmg::read(&pmg)?;
         let mut in_variation = vec![false; shown.len()];
-        for part in 0..count {
-            let record = table + PART_SIZE * part;
-            let name = u64::from(word(&pmg, record)?) | u64::from(word(&pmg, record + 4)?) << 32;
-            if parts.contains(&name) {
-                let (pieces, first) = (word(&pmg, record + 8)? as usize, word(&pmg, record + 12)? as usize);
-                let end = first.saturating_add(pieces).min(in_variation.len());
+        for part in 0..model.part_count()? {
+            let part = model.part(part)?;
+            if part.name.is_some_and(|name| parts.contains(&name)) {
+                let (first, end) = (part.pieces.start, part.pieces.end.min(in_variation.len()));
                 if first < end {
                     in_variation[first..end].fill(true);
                 }
@@ -1160,32 +1125,22 @@ fn wall_height(set: &StructureSet, variation: u64, files: &GameFiles) -> Option<
     (top >= LEAST_HEIGHT).then_some(top)
 }
 
-/// `work` done for each of `jobs` on every core, what each gives in one map.
-fn on_every_core<J: Sync, K: Eq + std::hash::Hash + Send, V: Send>(
-    jobs: &[J],
-    work: impl Fn(&J) -> Vec<(K, V)> + Sync,
-) -> HashMap<K, V> {
-    let next = AtomicUsize::new(0);
-    let threads = std::thread::available_parallelism().map_or(4, |n| n.get());
-    std::thread::scope(|scope| {
-        let workers: Vec<_> = (0..threads)
-            .map(|_| {
-                scope.spawn(|| {
-                    let mut done = Vec::new();
-                    while let Some(job) = jobs.get(next.fetch_add(1, Ordering::Relaxed)) {
-                        done.extend(work(job));
-                    }
-                    done
-                })
-            })
-            .collect();
-        workers.into_iter().flat_map(|worker| worker.join().expect("a shape's worker")).collect()
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::pmg::LOCATOR_SIZE;
+
+    /// The current `.pmg` format's layout ([`crate::pmg`]), as the models made here are written: its first word, its
+    /// box, its pieces' count and records, its parts' count and records, its locators.
+    const PMG_MAGIC: u32 = crate::pmg::CURRENT;
+    const BOX_AT: usize = 48;
+    const PIECE_COUNT_AT: usize = 4;
+    const PIECES_AT: usize = 84;
+    const PIECE_SIZE: usize = 100;
+    const PART_COUNT_AT: usize = 8;
+    const PARTS_AT: usize = 76;
+    const PART_SIZE: usize = 24;
+    const LOCATORS_AT: usize = 80;
 
     /// `flats_close_01_be_lux.pmg`'s first 72 bytes (the base game's, 1.61): its box from (−8.0, −1.0, −2.0)
     /// to (10.7, 12.3, 4.7).
@@ -1311,6 +1266,24 @@ mod tests {
     }
 
     #[test]
+    fn a_piece_or_triangle_that_doesnt_read_is_left_out_not_the_model() {
+        // Two triangles in one piece, the second's last index past its vertices; and a piece whose stride is 0.
+        let triangle = [[0.0, 0.0, 0.0], [1.0, 2.0, 0.0], [0.0, 3.0, 4.0]];
+        let mut data = pmg(&[triangle, triangle]);
+        let table = 112;
+        let indices_at = u32::from_le_bytes(data[table + 96..table + 100].try_into().unwrap()) as usize;
+        data[indices_at + 10..indices_at + 12].copy_from_slice(&99u16.to_le_bytes());
+        assert_eq!(model_triangles(&data), Some(vec![triangle]), "the triangle that reads");
+        // Its index count damaged to 4 billion: as far as the file holds them, never a walk of billions.
+        data[table..table + 4].copy_from_slice(&u32::MAX.to_le_bytes());
+        let started = std::time::Instant::now();
+        assert_eq!(model_triangles(&data), Some(vec![triangle]));
+        assert!(started.elapsed() < std::time::Duration::from_secs(1));
+        data[table + 60..table + 64].copy_from_slice(&0u32.to_le_bytes());
+        assert_eq!(model_triangles(&data), Some(vec![]), "the piece left out, the model still one");
+    }
+
+    #[test]
     fn reads_a_models_box_and_triangles() {
         let model = model_box(&flats_header()).unwrap();
         assert!((model.min[0] + 8.009).abs() < 0.001 && (model.max[1] - 12.304).abs() < 0.001);
@@ -1358,13 +1331,50 @@ mod tests {
     }
 
     #[test]
+    fn a_buildings_top_is_as_high_as_it_gets_all_along() {
+        // A wall 40 m long and 2 m thick, its top falling from 20 m to 4 m: a cable's fall, an arch's side.
+        let corner = |x: f32, y: f32, z: f32| [x, y, z];
+        let side = |z: f32| {
+            let (a, b, c, d) = (corner(0.0, 0.0, z), corner(40.0, 0.0, z), corner(40.0, 4.0, z), corner(0.0, 20.0, z));
+            [[a, b, c], [a, c, d]]
+        };
+        let (near, far) = (side(0.0), side(2.0));
+        let top = [
+            [corner(0.0, 20.0, 0.0), corner(40.0, 4.0, 0.0), corner(40.0, 4.0, 2.0)],
+            [corner(0.0, 20.0, 0.0), corner(40.0, 4.0, 2.0), corner(0.0, 20.0, 2.0)],
+        ];
+        let triangles: Vec<[[f32; 3]; 3]> = near.into_iter().chain(far).chain(top).collect();
+        let model_box = ModelBox { min: [0.0, 0.0, 0.0], max: [40.0, 20.0, 2.0] };
+        // A building's stays as high as it gets, all along.
+        let flat = trace(&model_box, &triangles, Ground::Level);
+        assert!(flat.iter().all(|part| part.top > 17.0), "{flat:?}");
+    }
+
+    #[test]
+    fn a_part_left_out_leaves_no_hole_in_what_s_round_it() {
+        // A roof from 7 to 8 m, 30 m a side, on a column too small to be a part, and a courtyard open to the sky in a
+        // block round it.
+        let mut faces = box_faces([0.0, 7.0, 0.0], [30.0, 8.0, 30.0], true, true);
+        faces.extend(box_faces([14.0, 0.0, 14.0], [16.0, 8.0, 16.0], true, false));
+        let shape = model_shape(&pmg(&faces)).unwrap();
+        let roof = shape.parts.iter().find(|part| part.bottom > 0.0).expect("the roof");
+        assert_eq!(roof.rings.len(), 1, "{roof:?}");
+        let mut faces = Vec::new();
+        for (from, to) in [([0.0, 0.0], [40.0, 10.0]), ([0.0, 30.0], [40.0, 40.0]), ([0.0, 10.0], [10.0, 30.0]), ([30.0, 10.0], [40.0, 30.0])] {
+            faces.extend(box_faces([from[0], 0.0, from[1]], [to[0], 8.0, to[1]], true, false));
+        }
+        let shape = model_shape(&pmg(&faces)).unwrap();
+        assert_eq!(shape.parts.iter().map(|part| part.rings.len()).max(), Some(2), "{:?}", shape.parts);
+    }
+
+    #[test]
     fn a_tower_and_its_sphere_are_parts_of_their_own() {
         // A shaft 4 x 4 m up to 100 m, and round it from 80 to 90 m a 12 x 12 m pod (closed: top and bottom).
         let mut faces = box_faces([4.0, 0.0, 4.0], [8.0, 100.0, 8.0], true, false);
         faces.extend(box_faces([0.0, 80.0, 0.0], [12.0, 90.0, 12.0], true, true));
         let shape = model_shape(&pmg(&faces)).unwrap();
         let shaft = shape.parts.iter().find(|part| (part.top - 100.0).abs() < 0.01).expect("the shaft");
-        assert_eq!(shaft.bottom, 0.0);
+        assert_eq!(shaft.bottom, 0.0, "{:?}", shape.parts);
         let pod = shape.parts.iter().find(|part| (part.top - 90.0).abs() < 0.01).expect("the pod");
         // Its underside, to a height step (100 m in 64).
         assert!((pod.bottom - 80.0).abs() < 1.6, "{pod:?}");
@@ -1452,10 +1462,12 @@ mod tests {
     fn a_variant_shows_only_its_parts_pieces() {
         // A `.pmg` of three pieces in two parts (the first piece, then the other two), and its `.pmd`: two
         // variants, `default` showing both parts, `winter` hiding the second (its `visible` attribute 0).
-        let mut pmg = vec![0u8; 200];
+        // Its pieces' records (their contents unread here) after the parts', within the file as a real model's are.
+        let mut pmg = vec![0u8; 160 + 3 * PIECE_SIZE];
         let put = |data: &mut Vec<u8>, at: usize, value: u32| data[at..at + 4].copy_from_slice(&value.to_le_bytes());
         put(&mut pmg, 0, PMG_MAGIC);
         put(&mut pmg, PIECE_COUNT_AT, 3);
+        put(&mut pmg, PIECES_AT, 160);
         put(&mut pmg, PART_COUNT_AT, 2);
         put(&mut pmg, PARTS_AT, 100);
         for (part, (count, first)) in [(1, 0), (2, 1)].into_iter().enumerate() {
@@ -1611,11 +1623,11 @@ mod tests {
             vec![[200.0, 0.0], [260.0, 0.0]],
         ];
         let heights = [
-            (1, 12.0, [0.0, 0.0]),
-            (2, 12.0, [60.0, 0.5]),
-            (3, 8.0, [60.0, 30.0]),
-            (4, 12.0, [0.0, 30.0]),
-            (5, 12.0, [200.0, 0.0]),
+            (1, 12.0, [0.0, 0.0], 0.0),
+            (2, 12.0, [60.0, 0.5], 0.0),
+            (3, 8.0, [60.0, 30.0], 0.0),
+            (4, 12.0, [0.0, 30.0], 0.0),
+            (5, 12.0, [200.0, 0.0], 0.0),
         ];
         let buildings = set_buildings(&walls, &heights, [-1000.0, -1000.0, 1000.0, 1000.0]);
         assert_eq!(buildings.len(), 1, "{buildings:?}");

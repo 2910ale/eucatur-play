@@ -1,5 +1,5 @@
 import { useShallow } from 'zustand/react/shallow'
-import { formatGameTime, formatTripDistance, formatTripTime, speedKmh } from '../../shared/format'
+import { formatGameTime, formatTripDistance, formatTripTime, roadSpeed } from '../../shared/format'
 import { hvtMapMessage } from '../maps/blockedMap'
 import { GuidanceCard } from '../maps/GuidanceCard'
 import { DashboardMapControls, MapControls } from '../maps/MapControls'
@@ -7,6 +7,7 @@ import { MapSearch } from '../maps/MapSearch'
 import { nextStop } from '../maps/nextStop'
 import { useMapData } from '../maps/mapData'
 import { RoadMap } from '../maps/RoadMap'
+import { useClockStyle } from '../state/hooks'
 import { useLive } from '../state/store'
 import { useText } from '../state/text'
 import './map.css'
@@ -22,10 +23,11 @@ import { cabClock } from '../../shared/host'
  * On a map WestPlay doesn't allow (by HVT), it says so instead, in the game's language.
  */
 export function MapView({ interactive = false }: { interactive?: boolean }) {
-  const speed = useLive((state) => (state.telemetry ? speedKmh(state.telemetry.speed) : 0))
-  const limit = useLive((state) => (state.telemetry ? speedKmh(state.telemetry.navigationSpeedLimit) : 0))
+  const speed = useLive((state) => (state.telemetry ? roadSpeed(state.telemetry.speed, state.mph) : 0))
+  const limit = useLive((state) => (state.telemetry ? roadSpeed(state.telemetry.navigationSpeedLimit, state.mph) : 0))
   const data = useMapData()
   const hvtMap = useLive((state) => state.hvtMap)
+  const chosen = useLive((state) => state.chosenLanguage)
   const text = useText()
 
   if (hvtMap) {
@@ -35,42 +37,61 @@ export function MapView({ interactive = false }: { interactive?: boolean }) {
           <path d="M3.5 6.5 9 4l6 2.5L20.5 4v13.5L15 20l-6-2.5-5.5 2.5Z" />
           <path d="M9 4v13.5M15 6.5V20M3 3l18 18" />
         </svg>
-        <p>{hvtMapMessage(hvtMap.language)}</p>
+        <p>{hvtMapMessage(chosen ?? hvtMap.language)}</p>
       </div>
     )
   }
 
+  // Layered so the Dashboard's map grows and shrinks by transforms alone (dashboard.css): the tile and its clip
+  // stand still, the window (the map's right edge, its zoom pair) slides, the content (the map, centred in what
+  // shows of it) slides against it, and the speeds against it all the way, standing still; its shadow in two
+  // parts, the left one still, the rest sliding. In the Maps app, all of them simply the tile.
   return (
     <div className="map-tile">
-      {data ? (
-        <RoadMap data={data} interactive={interactive} />
-      ) : (
-        data === null && (
-          <>
-            <div className="map-plane map-dark" />
-            <div className="map-plane map-light" />
-            <div className="puck" aria-hidden>
-              <svg viewBox="0 0 24 24" width="22" height="22">
-                <path d="M12 3 19 20l-7-4-7 4Z" fill="#fff" />
-              </svg>
-            </div>
-          </>
-        )
-      )}
-      <div className="map-shade" />
-      <TripPill />
-      <div className="speed-stack">
-        {limit > 0 && (
-          <div className="speed-limit" aria-label={text.speedLimit(limit)}>
-            {limit}
-          </div>
-        )}
-        {speed > 0 && <div className={`speed-badge${limit > 0 && speed > limit ? ' over' : ''}`}>{speed}</div>}
+      <div className="map-shadow map-shadow-left" aria-hidden />
+      <div className="map-shadow-clip" aria-hidden>
+        <div className="map-shadow map-shadow-moving" />
       </div>
-      {interactive && <GuidanceCard variant="banner" />}
-      {data && interactive && <MapControls />}
-      {data && !interactive && <DashboardMapControls />}
-      {data && interactive && <MapSearch />}
+      <div className="map-clip">
+        <div className="map-window">
+          <div className="map-content">
+            {data ? (
+              <RoadMap data={data} interactive={interactive} />
+            ) : (
+              data === null && (
+                <>
+                  <div className="map-plane map-dark" />
+                  <div className="map-plane map-light" />
+                  <div className="puck" aria-hidden>
+                    <svg viewBox="0 0 24 24" width="22" height="22">
+                      <path d="M12 3 19 20l-7-4-7 4Z" fill="#fff" />
+                    </svg>
+                  </div>
+                </>
+              )
+            )}
+            <div className="map-shade" />
+            <TripPill />
+          </div>
+          <div className="map-still">
+            <div className="speed-stack">
+              {limit > 0 && (
+                <div
+                  className={limit >= 100 ? 'speed-limit three-digits' : 'speed-limit'}
+                  aria-label={text.speedLimit(limit)}
+                >
+                  {limit}
+                </div>
+              )}
+              {speed > 0 && <div className={`speed-badge${limit > 0 && speed > limit ? ' over' : ''}`}>{speed}</div>}
+            </div>
+          </div>
+          {interactive && <GuidanceCard variant="banner" />}
+          {data && interactive && <MapControls />}
+          {data && !interactive && <DashboardMapControls />}
+          {data && interactive && <MapSearch />}
+        </div>
+      </div>
     </div>
   )
 }
@@ -83,6 +104,7 @@ export function MapView({ interactive = false }: { interactive?: boolean }) {
  */
 function TripPill() {
   const text = useText()
+  const clock = useClockStyle()
   const trip = useLive(
     useShallow((state) => {
       const telemetry = state.telemetry
@@ -99,9 +121,9 @@ function TripPill() {
         : null
       const total = formatTripTime(minutes, text)
       return [
-        formatGameTime(Math.round(cabClock(telemetry, state.clockShift) + minutes)),
+        formatGameTime(Math.round(cabClock(telemetry, state.clockShift) + minutes), clock),
         stop ? `${formatTripTime(stop.minutes, text)} | ${total}` : total,
-        formatTripDistance(telemetry.navigationDistance, text.decimal),
+        formatTripDistance(telemetry.navigationDistance, text.decimal, state.mph),
       ]
     }),
   )

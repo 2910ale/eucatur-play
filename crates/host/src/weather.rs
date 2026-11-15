@@ -79,16 +79,19 @@ pub struct Layout {
 /// The weather as it changes (`None`: no game, or its weather can't be read).
 pub struct WeatherWatch {
     pub updates: Receiver<Option<Weather>>,
+    /// Its thread ends with it (`worker`).
+    _ending: crate::worker::Ending,
 }
 
 impl WeatherWatch {
     pub fn start(bridge: Arc<BridgeMapping>) -> Self {
         let (sender, updates) = mpsc::channel();
+        let (ending, ended) = crate::worker::ending();
         let _ = std::thread::Builder::new().name("westplay-weather".into()).spawn(move || {
             let mut game: Option<(Process, Layout)> = None;
             let mut failed: Option<(u32, Instant)> = None;
             let mut sent: Option<Option<Weather>> = None;
-            loop {
+            while !ended.now() {
                 let pid = bridge.bridge().plugin.pid.load(Ordering::Acquire);
                 if game.as_ref().map(|(process, _)| process.pid) != Some(pid) {
                     game = None;
@@ -122,7 +125,7 @@ impl WeatherWatch {
                 std::thread::sleep(READ_EVERY);
             }
         });
-        Self { updates }
+        Self { updates, _ending: ending }
     }
 }
 
@@ -216,6 +219,20 @@ fn locate(text: &Section) -> Option<Layout> {
 mod tests {
     use super::*;
     use std::collections::BTreeMap;
+
+    /// The weather's layout found in each game build named by `WESTPLAY_GAME_EXES` (paths to the games'
+    /// executables, ETS2's and ATS's, separated by `;`), printed.
+    #[test]
+    #[ignore = "needs game executables: WESTPLAY_GAME_EXES"]
+    fn finds_the_weather_in_each_game_build() {
+        let exes = std::env::var("WESTPLAY_GAME_EXES").expect("WESTPLAY_GAME_EXES");
+        for exe in exes.split(';').filter(|exe| !exe.is_empty()) {
+            let image = std::fs::read(exe).unwrap();
+            let layout = section(&image, b".text ").and_then(|text| locate(&text));
+            println!("{exe}: {layout:x?}");
+            assert!(layout.is_some(), "{exe}: the weather isn't found");
+        }
+    }
 
     /// The game's copy of its weather as the code has it (1.61.1.1), the global loaded `before` bytes ahead.
     fn code(before: usize) -> Vec<u8> {

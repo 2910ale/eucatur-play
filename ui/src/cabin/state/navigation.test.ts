@@ -7,7 +7,9 @@ import {
   type NavigationState,
   RECENTS_LIMIT,
   routeKey,
+  sidebarApps,
 } from './navigation'
+import { APP_IDS } from './apps'
 
 describe('navigate', () => {
   it('starts on the Eucatur tablet', () => {
@@ -21,10 +23,10 @@ describe('navigate', () => {
     expect(state.recents).toEqual(['youtube', 'eucatur', 'spotify', 'music', 'youtubeMusic'])
   })
 
-  it('adds a new app to the recents and keeps the limit', () => {
+  it('adds a new app to the recents, keeping every app used', () => {
     const state = navigate(INITIAL_NAVIGATION, { type: 'openApp', app: 'settings' })
-    expect(state.recents).toEqual(['settings', 'eucatur', 'spotify', 'youtube', 'music'])
-    expect(state.recents).toHaveLength(RECENTS_LIMIT)
+    expect(state.recents).toEqual(['settings', 'eucatur', 'spotify', 'youtube', 'music', 'youtubeMusic'])
+    expect(RECENTS_LIMIT).toBe(APP_IDS.length)
   })
 
   it('takes the Home button from any app back to the Eucatur tablet', () => {
@@ -58,6 +60,38 @@ describe('navigate', () => {
     expect(navigate(inApp, { type: 'showHome' }).route).toEqual({ kind: 'home' })
     const home = navigate(inApp, { type: 'showHome' })
     expect(navigate(home, { type: 'showHome' })).toEqual(home)
+  })
+})
+
+describe('sidebarApps', () => {
+  // Eucatur Play: the Eucatur tablet in the maps app's slot; Phone and Messages aren't in it, so their slot is left
+  // out and the fourth (Calendar, Weather, Settings or Safari) comes third.
+  it('shows one app of each kind, the last used of it, in a fixed order', () => {
+    expect(sidebarApps(['weather', 'spotify', 'youtube', 'music', 'maps'], 3)).toEqual(['eucatur', 'spotify', 'weather'])
+    expect(sidebarApps(['youtubeMusic', 'messages', 'spotify', 'phone'], 3)).toEqual([
+      'eucatur',
+      'youtubeMusic',
+      'calendar',
+    ])
+  })
+
+  it("takes each kind's first app until one of it is used", () => {
+    expect(sidebarApps([], 3)).toEqual(['eucatur', 'music', 'calendar'])
+    expect(sidebarApps(['settings'], 3)).toEqual(['eucatur', 'music', 'settings'])
+  })
+
+  it('shows only as many as the screen has room for', () => {
+    expect(sidebarApps(['spotify'], 1)).toEqual(['eucatur'])
+    expect(sidebarApps(['safari', 'weather', 'spotify'], 4)).toEqual(['eucatur', 'spotify', 'safari'])
+    expect(sidebarApps(['spotify'], 9)).toHaveLength(3)
+  })
+
+  it('remembers a music app however many others were opened since', () => {
+    let state = navigate(INITIAL_NAVIGATION, { type: 'openApp', app: 'youtubeMusic' })
+    for (const app of ['weather', 'settings', 'youtube', 'eucatur'] as const) {
+      state = navigate(state, { type: 'openApp', app })
+    }
+    expect(sidebarApps(state.recents, 3)).toEqual(['eucatur', 'youtubeMusic', 'settings'])
   })
 })
 

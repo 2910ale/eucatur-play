@@ -32,6 +32,22 @@ pub struct Countries {
     pub cells: Vec<u8>,
     /// Each country's time zone, minutes from UTC, by id.
     pub zones: BTreeMap<u8, i32>,
+    /// Parts of countries in another time zone than the rest of theirs.
+    pub areas: Vec<ZoneArea>,
+    /// The zone the SDK's game time is in (minutes), the game's (`None`: not said, ETS2's central Europe).
+    pub base: Option<i32>,
+}
+
+/// A part of a country in another time zone than the rest of it (a `country_data`'s
+/// `secondary_time_zone_area[]` and `secondary_time_zone[]`: ATS's Navajo Nation in Arizona, El Paso in Texas,
+/// on Mountain time; read 2026-10-28, El Paso at (-49616, 38395) inside Texas's): the country, its rectangle
+/// (west and east x, north and south z, metres) and its zone (minutes from UTC).
+#[derive(Clone, Debug, PartialEq)]
+pub struct ZoneArea {
+    pub country: u8,
+    pub x: [f32; 2],
+    pub z: [f32; 2],
+    pub zone: i32,
 }
 
 /// The countries of the roads either side of `node` (forward, backward), 0 for none.
@@ -60,19 +76,34 @@ pub fn grid<'a>(nodes: impl IntoIterator<Item = &'a Node>) -> Countries {
     let (columns, rows) = ((columns.0 - rings, columns.1 + rings), (rows.0 - rings, rows.1 + rings));
     let (width, height) = ((columns.1 - columns.0 + 1) as usize, (rows.1 - rows.0 + 1) as usize);
     let mut voted = vec![0u8; width * height];
-    for ((column, row), counts) in votes {
+    for ((column, row), counts) in &votes {
         // The most, the lower id of a tie: the same every build.
-        let most = counts.into_iter().max_by_key(|&(country, count)| (count, std::cmp::Reverse(country)));
+        let most = counts
+            .iter()
+            .map(|(&country, &count)| (country, count))
+            .max_by_key(|&(country, count)| (count, std::cmp::Reverse(country)));
         let at = (row - rows.0) as usize * width + (column - columns.0) as usize;
         voted[at] = most.map_or(0, |(country, _)| country);
     }
-    let cells = (0..width * height)
-        .map(|at| match voted[at] {
-            0 => nearest(&voted, width, height, (at % width) as i64, (at / width) as i64),
-            country => country,
-        })
-        .collect();
-    Countries { x: columns.0 as f32 * CELL, z: rows.0 as f32 * CELL, width, height, cells, zones: BTreeMap::new() }
+    // A square with no country of its own takes the nearest within the rings: only those within the rings of a voted
+    // square can, so only they're looked round (every square of the grid was: a stray node far out made billions of
+    // looks, the review of 2026-11-11, minor 17).
+    let mut cells = voted.clone();
+    let mut looked = vec![false; width * height];
+    for &(column, row) in votes.keys() {
+        let (column, row) = ((column - columns.0) as i64, (row - rows.0) as i64);
+        for r in (row - SEARCH_RINGS).max(0)..=(row + SEARCH_RINGS).min(height as i64 - 1) {
+            for c in (column - SEARCH_RINGS).max(0)..=(column + SEARCH_RINGS).min(width as i64 - 1) {
+                let at = r as usize * width + c as usize;
+                if voted[at] == 0 && !looked[at] {
+                    looked[at] = true;
+                    cells[at] = nearest(&voted, width, height, c, r);
+                }
+            }
+        }
+    }
+    let (x, z) = (columns.0 as f32 * CELL, rows.0 as f32 * CELL);
+    Countries { x, z, width, height, cells, zones: BTreeMap::new(), areas: Vec::new(), base: None }
 }
 
 /// The country of the nearest square with one within `SEARCH_RINGS` of `column`, `row` (by straight distance,
@@ -105,9 +136,9 @@ fn nearest(voted: &[u8], width: usize, height: usize, column: i64, row: i64) -> 
     0
 }
 
-/// Each country's time zone (minutes), by id: from the game's country definitions (`def/country/*.sui`, and
-/// a mod's `def/country.<mod>.sii`), map mods' countries with theirs.
-pub fn time_zones(files: &GameFiles) -> Result<BTreeMap<u8, i32>, FileError> {
+/// Each country's time zone (minutes), by id, and the parts of countries in another: from the game's country
+/// definitions (`def/country/*.sui`, and a mod's `def/country.<mod>.sii`), map mods' countries with theirs.
+pub fn time_zones(files: &GameFiles) -> Result<(BTreeMap<u8, i32>, Vec<ZoneArea>), FileError> {
     let mut paths: Vec<String> = files
         .list("def/country")?
         .into_iter()
@@ -121,12 +152,53 @@ pub fn time_zones(files: &GameFiles) -> Result<BTreeMap<u8, i32>, FileError> {
             .filter(|name| name.starts_with("country.") && name.ends_with(".sii"))
             .map(|name| format!("def/{name}")),
     );
-    let mut zones = BTreeMap::new();
+    let (mut zones, mut areas) = (BTreeMap::new(), Vec::new());
     for path in paths {
         let Some(bytes) = files.read(&path)? else { continue };
-        zones.extend(zones_in(&String::from_utf8_lossy(&bytes)));
+        let text = String::from_utf8_lossy(&bytes);
+        zones.extend(zones_in(&text));
+        areas.extend(areas_in(&text));
     }
-    Ok(zones)
+    Ok((zones, areas))
+}
+
+/// The parts of countries in another time zone ([`ZoneArea`]) in a file's text: each country definition's
+/// `secondary_time_zone_area[]: (x0, x1, z0, z1)` and `secondary_time_zone[]` in their order.
+fn areas_in(text: &str) -> Vec<ZoneArea> {
+    let mut found = Vec::new();
+    let (mut id, mut rectangles, mut zones) = (None::<u8>, Vec::new(), Vec::new());
+    let mut done = |id: Option<u8>, rectangles: &mut Vec<[f32; 4]>, zones: &mut Vec<i32>| {
+        if let Some(country) = id {
+            for (r, &zone) in rectangles.iter().zip(zones.iter()) {
+                found.push(ZoneArea { country, x: [r[0], r[1]], z: [r[2], r[3]], zone });
+            }
+        }
+        rectangles.clear();
+        zones.clear();
+    };
+    for line in text.lines() {
+        let line = line.trim();
+        if line.contains("country_data") && line.contains(':') && !line.starts_with('#') {
+            done(id, &mut rectangles, &mut zones);
+            id = None;
+        }
+        let after = |name: &str| Some(line.strip_prefix(name)?.trim_start().strip_prefix(':')?.trim());
+        if let Some(value) = after("country_id") {
+            id = value.split(|c: char| c.is_whitespace() || c == '#').next().and_then(|word| word.parse().ok());
+        } else if let Some(value) = after("secondary_time_zone_area[]") {
+            let inside = value.trim_start_matches('(').split(')').next().unwrap_or_default();
+            let numbers: Vec<f32> = inside.split(',').filter_map(|number| number.trim().parse().ok()).collect();
+            if let [x0, x1, z0, z1] = numbers[..] {
+                rectangles.push([x0, x1, z0, z1]);
+            }
+        } else if let Some(value) = after("secondary_time_zone[]")
+            && let Some(zone) = value.split(|c: char| c.is_whitespace() || c == '#').next().and_then(|w| w.parse().ok())
+        {
+            zones.push(zone);
+        }
+    }
+    done(id, &mut rectangles, &mut zones);
+    found
 }
 
 /// The `country_id` and `time_zone` of each country definition in a file's text.
@@ -164,6 +236,16 @@ impl Countries {
         self.cells[row as usize * self.width + column as usize]
     }
 
+    /// The time zone at `[x, z]` (minutes): of the part of its country there in another zone ([`ZoneArea`]), else
+    /// of its country; `None` where neither is known. The page works it out the same (maps/countries.ts).
+    pub fn zone_at(&self, x: f32, z: f32) -> Option<i32> {
+        let country = self.at(x, z);
+        let inside = |area: &&ZoneArea| {
+            area.country == country && (area.x[0]..=area.x[1]).contains(&x) && (area.z[0]..=area.z[1]).contains(&z)
+        };
+        self.areas.iter().find(inside).map(|area| area.zone).or_else(|| self.zones.get(&country).copied())
+    }
+
     /// As the page reads it (`countries.json`): the grid, its squares as a string of hex pairs.
     pub fn to_json(&self) -> serde_json::Value {
         let cells: String = self.cells.iter().map(|cell| format!("{cell:02x}")).collect();
@@ -175,6 +257,10 @@ impl Countries {
             "height": self.height,
             "cells": cells,
             "zones": self.zones.iter().map(|(id, minutes)| (id.to_string(), minutes)).collect::<BTreeMap<_, _>>(),
+            "base": self.base,
+            "areas": self.areas.iter().map(|area| serde_json::json!({
+                "country": area.country, "x": area.x, "z": area.z, "zone": area.zone,
+            })).collect::<Vec<_>>(),
         })
     }
 }
@@ -194,6 +280,53 @@ mod tests {
             backward_item: 0,
             forward_item: 0,
             flags: u32::from(forward) << 8 | u32::from(backward) << 16 | 1,
+        }
+    }
+
+    /// Each square as when every square of the grid looked round itself: random roads in clusters far apart.
+    #[test]
+    fn only_squares_near_roads_look_round_and_each_comes_out_as_before() {
+        let mut seed = 0x51_7C_C1_B7_27_22_0A_95u64;
+        let mut next = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        for _ in 0..20 {
+            let mut nodes = Vec::new();
+            for cluster in 0..3 {
+                let (cx, cz) = (cluster as f32 * 60_000.0, (next() % 40_000) as f32);
+                for _ in 0..40 {
+                    let (x, z) = (cx + (next() % 20_000) as f32, cz + (next() % 20_000) as f32);
+                    let country = (next() % 4) as u8;
+                    nodes.push(node(x, z, country, if next() % 3 == 0 { 0 } else { country }));
+                }
+            }
+            let countries = grid(&nodes);
+            let (width, height) = (countries.width, countries.height);
+            // Each square's own votes again, and every square looking round as before.
+            let mut voted = vec![0u8; width * height];
+            for (at, own_vote) in voted.iter_mut().enumerate() {
+                let (x, z) = (countries.x + (at % width) as f32 * CELL, countries.z + (at / width) as f32 * CELL);
+                let inside =
+                    |n: &&Node| (x..x + CELL).contains(&n.position[0]) && (z..z + CELL).contains(&n.position[2]);
+                let own: Vec<&Node> = nodes.iter().filter(inside).collect();
+                let mut counts: HashMap<u8, u32> = HashMap::new();
+                for n in own {
+                    for country in countries_of(n).into_iter().filter(|&c| c != 0) {
+                        *counts.entry(country).or_default() += 1;
+                    }
+                }
+                *own_vote = counts.into_iter().max_by_key(|&(c, n)| (n, std::cmp::Reverse(c))).map_or(0, |(c, _)| c);
+            }
+            for at in 0..width * height {
+                let before = match voted[at] {
+                    0 => nearest(&voted, width, height, (at % width) as i64, (at / width) as i64),
+                    country => country,
+                };
+                assert_eq!(countries.cells[at], before, "square {at}");
+            }
         }
     }
 
@@ -229,6 +362,39 @@ mod tests {
         assert_eq!(zones_in(text), [(23, 180), (10, 60)]);
         // One without a time zone: none.
         assert_eq!(zones_in("country_data : x\n{\ncountry_id: 3\n}\n"), []);
+    }
+
+    #[test]
+    fn reads_the_parts_of_countries_in_another_time_zone() {
+        // ATS's Texas (1.61), and a country with none.
+        let text = "SiiNunit
+{
+country_data : country.data.texas
+{
+	country_id: 43
+	time_zone: -300	# -5 hours
+	time_zone_name: \"@@tz_cdt@@\"
+	secondary_time_zone_area[]: (-51286.5, -43729.5, 37159.7, 42864.0)
+	secondary_time_zone[]: -360
+	secondary_time_zone_name[]: \"@@tz_mdt@@\"
+}
+country_data : country.data.illinois
+{
+	country_id: 14
+	time_zone: -300
+}
+}
+";
+        assert_eq!(zones_in(text), [(43, -300), (14, -300)]);
+        assert_eq!(
+            areas_in(text),
+            [ZoneArea { country: 43, x: [-51286.5, -43729.5], z: [37159.7, 42864.0], zone: -360 }]
+        );
+        // El Paso in it (Mountain time), Dallas outside it (Central): the grid all Texas.
+        let mut texas = grid(&[node(-49616.0, 38395.0, 43, 43), node(-30000.0, 38000.0, 43, 43)]);
+        (texas.zones, texas.areas) = (BTreeMap::from([(43, -300)]), areas_in(text));
+        assert_eq!(texas.zone_at(-49616.0, 38395.0), Some(-360));
+        assert_eq!(texas.zone_at(-30000.0, 38000.0), Some(-300));
     }
 
     #[test]

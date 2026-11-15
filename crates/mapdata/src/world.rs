@@ -5,7 +5,7 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fmt;
 use std::path::{Path, PathBuf};
 
-use crate::data::{self, DataOwner, RoadTerrain};
+use crate::data::{self, DataOwner, PrefabData, RoadTerrain};
 use crate::files::{FileError, GameFiles};
 use crate::prefab::{self, Prefab};
 use crate::sector::{self, Item, ItemData, Node, SectorError};
@@ -58,9 +58,10 @@ pub struct RoadLook {
     /// A road the game doesn't show (its look's `invisible: true`, as `road.blke_40`, "invis road 1 one
     /// way"): traffic and the GPS may use it, but it's no road piece the player sees.
     pub invisible: bool,
-    /// No vehicle may drive it: every lane of it `traffic_lane.no_vehicles` (`road.template48`, "it road 1
-    /// minim"; `road.blkw1mdc`, "blkw road 1 minim dirt center"). Drawn, never routed along (owner
-    /// 2026-10-22: WestPlay's routes went where the game's GPS never goes).
+    /// Private: every lane of it `traffic_lane.no_vehicles` (`road.template48`, "it road 1 minim"; `road.blkw1mdc`, "blkw
+    /// road 1 minim dirt center"), the game's `traffic_rule.private_area`, as depots', hotels' and service areas' ways in
+    /// are. Drawn; routes only go along it to reach what's on it, or to leave it (owner 2026-10-22: WestPlay's routes went
+    /// through where the game's GPS never goes).
     pub no_vehicles: bool,
 }
 
@@ -107,15 +108,33 @@ pub struct Definitions {
     pub terrain_profiles: HashMap<u64, TerrainProfile>,
     /// Model token (`model.*`) → the building it is, for the models that are buildings ([`building_kind`]).
     pub buildings: HashMap<u64, BuildingModel>,
+    /// Model token → its file, for the models that may be a game's landmarks by where it keeps them (ATS's: landmarks.rs
+    /// picks them once their placements are known).
+    pub landmark_candidates: HashMap<u64, String>,
     /// Curve model token (`curve.*`) → the structure set it is: a building's walls, repeated along curves
     /// round it (`/model2/building/shop/structure_set_*`, `/asset/building/logistics/warehouse/structure_set_*`).
     pub structure_sets: HashMap<u64, StructureSet>,
     /// Railing tokens (`railing.*`) the game defines as a tunnel's (`tunnel: true`: its walls and roof along the
     /// road): a road with one is a tunnel.
     pub tunnel_railings: HashSet<u64>,
+    /// Semaphore profiles (`tr_sem_prof.*`, tokens of what follows the prefix) that are barriers (a type `barrier_*`:
+    /// manual and automatic toll booths, border gates, distance and filling station barriers; inherited too): a
+    /// route through one drives through that booth or gate ([`crate::prefab::Prefab::passes_barrier`]).
+    pub barriers: HashSet<u64>,
     /// Curve model tokens (`curve.*`) that are a tunnel's ([`tunnel_curve`]): the tube the newer maps build their
     /// tunnels of (Iberia, the Balkans, Greece, the Nordic countries), laid along the road through it.
     pub tunnel_curves: HashSet<u64>,
+    /// Curve models with water in them: rivers ([`crate::surface::find_water`]).
+    pub water_curves: HashMap<u64, WaterCurve>,
+    /// Models (`model.*`) with water in them: pools, fountains: their files.
+    pub water_models: HashMap<u64, String>,
+}
+
+/// How far a curve model's water reaches across (its x, least and most): in each of its variations, and in all of them.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct WaterCurve {
+    pub variations: HashMap<u64, (f32, f32)>,
+    pub whole: (f32, f32),
 }
 
 /// A structure set (a curve model whose path names one): its model's file, and each variation's parts (the
@@ -244,6 +263,24 @@ pub fn load_definitions(files: &GameFiles) -> Result<Definitions, FileError> {
             definitions.road_looks.insert(token, road_look(&unit));
         }
     }
+    // Barriers, and the profiles inheriting from one.
+    let profiles = sii::read_family(files, "/def/world", "semaphore_profile")?;
+    let barrier_of = |unit: &sii::Unit| unit.all("type").any(|kind| kind.trim().starts_with("barrier"));
+    let mut barriers: HashSet<&str> =
+        profiles.iter().filter(|unit| barrier_of(unit)).map(|unit| unit.name.as_str()).collect();
+    loop {
+        let more: Vec<&str> = profiles
+            .iter()
+            .filter(|unit| !barriers.contains(unit.name.as_str()))
+            .filter(|unit| unit.get("inherited").is_some_and(|parent| barriers.contains(parent.trim())))
+            .map(|unit| unit.name.as_str())
+            .collect();
+        if more.is_empty() {
+            break;
+        }
+        barriers.extend(more);
+    }
+    definitions.barriers = barriers.into_iter().filter_map(|name| token_after(name, "tr_sem_prof.")).collect();
     for unit in sii::read_family(files, "/def/world", "prefab")? {
         if let (Some(token), Some(path)) = (token_after(&unit.name, "prefab."), unit.get("prefab_desc")) {
             definitions.prefab_paths.insert(token, path.to_owned());
@@ -272,6 +309,8 @@ pub fn load_definitions(files: &GameFiles) -> Result<Definitions, FileError> {
             let path = path.trim_matches('"');
             if let Some(kind) = building_kind(path) {
                 definitions.buildings.insert(token, BuildingModel { path: path.to_owned(), kind });
+            } else if crate::landmarks::candidate(path) {
+                definitions.landmark_candidates.insert(token, path.to_owned());
             }
         }
     }
@@ -329,7 +368,7 @@ fn road_look(unit: &sii::Unit) -> RoadLook {
     let lanes: Vec<&str> = unit.all("lanes_left").chain(unit.all("lanes_right")).collect();
     let class = lanes.iter().map(|lane| lane_class(lane)).max();
     let invisible = unit.get("invisible") == Some("true");
-    let no_vehicles = !lanes.is_empty() && lanes.iter().all(|lane| *lane == "traffic_lane.no_vehicles");
+    let no_vehicles = !lanes.is_empty() && lanes.iter().all(|lane| lane.starts_with("traffic_lane.no_vehicles"));
     match class {
         Some(class) => RoadLook {
             class,
@@ -352,12 +391,13 @@ fn road_look(unit: &sii::Unit) -> RoadLook {
     }
 }
 
-/// What a lane (`traffic_lane.road.motorway.full_in`) says about its road.
+/// What a lane (`traffic_lane.road.motorway.full_in`) says about its road: ETS2's motorways and expressways, ATS's
+/// freeways and divided highways (its own names, 2026-10-28: `road.freeway`, `road.divided`).
 fn lane_class(lane: &str) -> RoadClass {
     let kind = lane.strip_prefix("traffic_lane.").unwrap_or(lane);
-    if kind.starts_with("road.motorway") {
+    if kind.starts_with("road.motorway") || kind.starts_with("road.freeway") {
         RoadClass::Motorway
-    } else if kind.starts_with("road.expressway") {
+    } else if kind.starts_with("road.expressway") || kind.starts_with("road.divided") {
         RoadClass::Trunk
     } else if kind.starts_with("road.local.dust") || kind.starts_with("road.local.narrow") {
         RoadClass::Minor
@@ -377,6 +417,8 @@ pub struct Map {
     pub items: Vec<Item>,
     pub nodes: HashMap<u64, Node>,
     pub road_terrain: HashMap<u64, RoadTerrain>,
+    /// Each prefab's own data (its look, the terrain at its nodes), by uid.
+    pub prefab_data: HashMap<u64, PrefabData>,
     /// The drawn map's buildings ([`load_drawn_map_telling`]): kept apart from `items` and in a few bytes each
     /// (an item is the size of its largest kind's, and ProMods' map has some 300,000 buildings).
     pub models: Vec<PlacedModel>,
@@ -413,8 +455,6 @@ enum Keep {
     Drop,
 }
 
-/// Reads all of a map's sectors, as mounted (a DLC's sector replaces the base game's of the same name,
-/// carrying both's items).
 /// Why a map couldn't be read.
 #[derive(Debug)]
 pub enum MapError {
@@ -451,6 +491,8 @@ impl From<FileError> for MapError {
     }
 }
 
+/// Reads all of a map's sectors, as mounted (a DLC's sector replaces the base game's of the same name,
+/// carrying both's items).
 pub fn load_map(files: &GameFiles, name: &str) -> Result<Map, MapError> {
     read_map(files, name, None, &mut |_| {})
 }
@@ -516,7 +558,12 @@ fn read_map(
 ) -> Result<Map, MapError> {
     let dir = format!("/map/{name}");
     let (mut items, mut nodes, mut road_terrain) = (Vec::new(), ReadNodes::default(), HashMap::new());
+    let mut prefab_data = HashMap::new();
     let (mut models, mut walls) = (Vec::new(), Vec::new());
+    // Which sector each road's and prefab's uid came from: one in two sectors (two maps' items sharing a uid) keeps the
+    // later's terrain and data alone, keyed by uid. None in the game's map or ProMods' with its add-ons (7 million
+    // items, examples/item_lengths 2026-11-12); one found is named (the review of 2026-11-11, minor 22).
+    let mut data_from: HashMap<u64, String> = HashMap::new();
     let sectors: Vec<String> = files.list(&dir)?.into_iter().filter(|file| file.ends_with(".base")).collect();
     let sector_count = sectors.len();
     let mut told = 0;
@@ -541,8 +588,24 @@ fn read_map(
             .collect();
         let data_path = base_path.replace(".base", ".data");
         if let Some(bytes) = files.read(&data_path)? {
-            let terrain = data::parse(&bytes, &owners).map_err(|error| MapError::sector(files, &data_path, error))?;
-            road_terrain.extend(terrain);
+            // Which item each entry is for comes from the `.base`: a mod with one of the pair and not the other broke
+            // it, and is what's left out (blamed on the `.data`'s mount, the game's own was named: no mod was, and the
+            // whole map failed: the review of 2026-11-11, C4c).
+            let read = data::parse(&bytes, &owners).map_err(|error| MapError::Sector {
+                path: data_path.clone(),
+                from: files.topmost_source(&[&base_path, &data_path]).map(Path::to_path_buf),
+                error,
+            })?;
+            for uid in read.roads.keys().chain(read.prefabs.keys()) {
+                if let Some(earlier) = data_from.insert(*uid, file.clone())
+                    && earlier != file
+                {
+                    let why = format_args!("item {uid:x} is in {earlier} too: that one's terrain or data replaced");
+                    files.note_unread(&data_path, &why);
+                }
+            }
+            road_terrain.extend(read.roads);
+            prefab_data.extend(read.prefabs);
         }
         let aux = read_sector(files, &base_path.replace(".base", ".aux"))?;
         let parts: Vec<sector::Sector> = [Some(base), aux].into_iter().flatten().collect();
@@ -550,10 +613,19 @@ fn read_map(
         add_sector(&mut kept, &mut nodes, &file, parts, |item| match (drawn, &item.data) {
             (None, _) => Keep::Item,
             (Some(_), ItemData::Other) => Keep::Drop,
-            (Some(drawn), ItemData::Model { model, .. }) if drawn.buildings.contains_key(model) => Keep::Building,
+            (Some(drawn), ItemData::Model { model, .. }) if drawn.water_models.contains_key(model) => Keep::Item,
+            (Some(drawn), ItemData::Model { model, .. })
+                if drawn.buildings.contains_key(model) || drawn.landmark_candidates.contains_key(model) =>
+            {
+                Keep::Building
+            }
             (Some(_), ItemData::Model { .. }) => Keep::Drop,
             (Some(drawn), ItemData::Curve { model, .. }) if drawn.structure_sets.contains_key(model) => Keep::Wall,
-            (Some(drawn), ItemData::Curve { model, .. }) if drawn.tunnel_curves.contains(model) => Keep::Item,
+            (Some(drawn), ItemData::Curve { model, .. })
+                if drawn.tunnel_curves.contains(model) || drawn.water_curves.contains_key(model) =>
+            {
+                Keep::Item
+            }
             (Some(_), ItemData::Curve { .. }) => Keep::Drop,
             (Some(_), _) => Keep::Item,
         });
@@ -568,7 +640,7 @@ fn read_map(
     };
     models.shrink_to_fit();
     walls.shrink_to_fit();
-    Ok(Map { items, nodes, road_terrain, models, walls })
+    Ok(Map { items, nodes, road_terrain, prefab_data, models, walls })
 }
 
 /// What a map's reading keeps: its items, and apart from them its buildings and its structure sets' walls.
@@ -647,7 +719,7 @@ fn add_sector(
                 (Keep::Building, ItemData::Model { model, node, scale }) => {
                     kept.models.push(PlacedModel { uid: item.uid, model, node, scale })
                 }
-                (Keep::Wall, ItemData::Curve { model, variation, start_node, end_node }) => {
+                (Keep::Wall, ItemData::Curve { model, variation, start_node, end_node, .. }) => {
                     kept.walls.push(PlacedWall { uid: item.uid, model, variation, start: start_node, end: end_node })
                 }
                 (_, data) => kept.items.push(Item { data, ..item }),
@@ -733,7 +805,7 @@ pub fn load_sectors(files: &GameFiles, name: &str, sectors: &BTreeSet<(i32, i32)
         add_sector(&mut kept, &mut nodes, &file, parts, |_| Keep::Item);
     }
     let nodes = nodes.into_map(|_| true);
-    Ok(Map { items, nodes, road_terrain: HashMap::new(), models: Vec::new(), walls: Vec::new() })
+    Ok(Map { items, nodes, road_terrain: HashMap::new(), prefab_data: HashMap::new(), models: Vec::new(), walls: Vec::new() })
 }
 
 /// A sector file, or `None` if the sector doesn't have it.
@@ -759,14 +831,22 @@ impl<'a> Prefabs<'a> {
         self.definitions
     }
 
-    /// The prefab of a model token, or `None` if it's unknown or unreadable.
+    /// The prefab of a model token, or `None` if it's unknown or unreadable (its descriptor noted:
+    /// [`GameFiles::note_unread`]; no junction is drawn for it).
     pub fn get(&mut self, model: u64) -> Option<&Prefab> {
         let (files, definitions) = (self.files, self.definitions);
         self.cache
             .entry(model)
             .or_insert_with(|| {
                 let path = definitions.prefab_paths.get(&model)?;
-                prefab::parse(&files.read(path).ok()??).ok()
+                let read = match files.read(path) {
+                    Ok(read) => read?,
+                    Err(error) => {
+                        files.note_unread(path, &error);
+                        return None;
+                    }
+                };
+                prefab::parse(&read).inspect_err(|error| files.note_unread(path, error)).ok()
             })
             .as_ref()
     }
@@ -775,6 +855,37 @@ impl<'a> Prefabs<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A prefab whose descriptor can't be read is none (no junction), and its descriptor's noted, once.
+    #[test]
+    fn a_prefab_whose_descriptor_cant_be_read_is_noted() {
+        let dir = crate::test_dir::TempDir::new();
+        std::fs::create_dir_all(dir.path.join("prefab")).unwrap();
+        std::fs::write(dir.path.join("prefab/bad.ppd"), 20u32.to_le_bytes()).unwrap();
+        let files = GameFiles::new(vec![crate::files::Mount::Folder(dir.path.clone())]);
+        let mut definitions = Definitions::default();
+        definitions.prefab_paths.insert(1, "/prefab/bad.ppd".into());
+        let mut prefabs = Prefabs::new(&files, &definitions);
+        assert!(prefabs.get(1).is_none());
+        assert!(prefabs.get(1).is_none());
+        let unread = files.unread();
+        assert_eq!(unread.count, 1);
+        assert!(unread.first[0].contains("prefab version 20"), "{}", unread.first[0]);
+    }
+
+    #[test]
+    fn tells_each_games_road_classes_by_their_lanes() {
+        // ETS2's.
+        assert_eq!(lane_class("traffic_lane.road.motorway.full_in"), RoadClass::Motorway);
+        assert_eq!(lane_class("traffic_lane.road.expressway"), RoadClass::Trunk);
+        assert_eq!(lane_class("traffic_lane.road.local.overtake"), RoadClass::Local);
+        assert_eq!(lane_class("traffic_lane.road.local.dust"), RoadClass::Minor);
+        // ATS's own names.
+        assert_eq!(lane_class("traffic_lane.road.freeway.on_ramp"), RoadClass::Motorway);
+        assert_eq!(lane_class("traffic_lane.road.divided.low_density"), RoadClass::Trunk);
+        assert_eq!(lane_class("traffic_lane.rail.train.cargo_low"), RoadClass::Rail);
+        assert_eq!(lane_class("traffic_lane.no_vehicles.dirt"), RoadClass::Minor);
+    }
 
     /// [`add_sector`] keeping the items in `items` and the buildings in `models` (the walls let go).
     fn add(
@@ -816,6 +927,7 @@ mod tests {
             items,
             nodes: nodes.into_map(|_| true),
             road_terrain: HashMap::new(),
+            prefab_data: HashMap::new(),
             models: Vec::new(),
             walls: Vec::new(),
         };

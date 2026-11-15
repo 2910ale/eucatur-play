@@ -2,7 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { go, useCabin, useLive } from '../../state/store'
 import { isInHost, postToHost } from '../../../shared/host'
 import { isReleasedApp } from '../../state/apps'
-import { languageOf } from '../../state/strings'
+import { keyboardLanguage } from '../../keyboard/layouts'
+import { useLanguage } from '../../state/text'
 import { type Typing, useKeyboard } from '../../keyboard/store'
 import './eucatur.css'
 
@@ -94,7 +95,7 @@ export function EucaturLayer({ shown }: { shown: boolean }) {
   const [state, setState] = useState<State>({ kind: 'asking' })
   const [attempt, setAttempt] = useState(0)
   const frame = useRef<HTMLIFrameElement>(null)
-  const language = languageOf(useLive((live) => live.gameLanguage))
+  const language = keyboardLanguage(useLanguage())
   const [warning, setWarning] = useState<Warning | null>(null)
 
   // A sign-in link from the Ponte, every time the app opens (or "Tentar de novo").

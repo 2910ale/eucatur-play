@@ -33,8 +33,8 @@ jobs:
       - name: Testes da interface
         run: npm test --prefix ui
 
-      - name: Plugin do jogo (westplay.dll)
-        run: cargo build --release -p westplay-plugin
+      - name: Plugin do jogo (westplay.dll), sonda e construtor de mapas
+        run: cargo build --release -p westplay-plugin -p westplay-probe -p westplay-maps
 
       # O Instalador Eucatur (Ponte, plugin de telemetria, Stream Deck) vai dentro do Eucatur Play: sempre o
       # mais novo do painel da comunidade.

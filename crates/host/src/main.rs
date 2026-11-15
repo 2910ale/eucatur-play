@@ -41,6 +41,7 @@ fn main() {
         on_aviso: Box::new(|_| {}),
         // No map for the standalone host: the app's setup chooses the game.
         game: Arc::default(),
+        map_builder: None,
         on_status: Box::new(|status| {
             println!(
                 "frames/s {:>3} (dropped total {}), game {}, screen {}{}",
