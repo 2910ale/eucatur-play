@@ -5,6 +5,7 @@ import { isReleasedApp } from '../../state/apps'
 import { keyboardLanguage } from '../../keyboard/layouts'
 import { useLanguage } from '../../state/text'
 import { type Typing, useKeyboard } from '../../keyboard/store'
+import { obeyRemote, useReportNowPlaying } from './remoto'
 import './eucatur.css'
 
 /**
@@ -198,6 +199,9 @@ export function EucaturLayer({ shown }: { shown: boolean }) {
           setWarning(shownWarning)
           if (urgent) beep()
         }
+      } else if (data.tipo === 'eucatur:midia') {
+        // nov/2026: the phone driving the cab's screen (remoto.ts)
+        obeyRemote(data)
       } else if (data.tipo === 'eucatur:soltou' && typeof data.id === 'string') {
         useKeyboard.getState().detach(`eucatur:${data.id.slice(0, 80)}`)
         if (typing.current?.field.id === data.id) typing.current = null
@@ -262,6 +266,9 @@ export function EucaturLayer({ shown }: { shown: boolean }) {
     const timer = setTimeout(() => setWarning(null), warning.urgent ? 15000 : warning.action ? 12000 : 7000)
     return () => clearTimeout(timer)
   }, [warning])
+
+  // What plays now and which screen shows, for the phone driving the screen (remoto.ts).
+  useReportNowPlaying(frame, state.kind === 'open' ? new URL(state.url).origin : null)
 
   const retry = useMemo(
     () => () => {
