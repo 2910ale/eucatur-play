@@ -4,7 +4,7 @@ import { go, useCabin, useLive } from '../../state/store'
 import { isReleasedApp } from '../../state/apps'
 import type { AppId } from '../../state/apps'
 import { useNowPlayingTrack } from '../../dashboard/useNowPlaying'
-import { openResults as youtubeResults, play as youtubePlay, goHome as youtubeHome } from '../youtube/youtube'
+import { openResults as youtubeResults, play as youtubePlay, goHome as youtubeHome, useYouTube } from '../youtube/youtube'
 import { openView as spotifyView } from '../spotify/spotify'
 import { openView as youtubeMusicView } from '../youtubeMusic/youtubeMusic'
 import { openView as appleMusicView } from '../music/appleMusic'
@@ -68,7 +68,7 @@ export function obeyRemote(data: { acao?: unknown; valor?: unknown; app?: unknow
     case 'video': {
       if (!/^[\w-]{6,20}$/.test(value)) return true
       opening('youtube', () =>
-        youtubePlay({ video: value, title: '', channel: '', avatar: null, thumbnail: null, duration: '', views: '', age: '', live: false }),
+        youtubePlay({ video: value, title: '', channel: '', avatar: null, thumbnail: `https://i.ytimg.com/vi/${value}/hqdefault.jpg`, duration: '', views: '', age: '', live: false }),
       )
       return true
     }
@@ -79,16 +79,22 @@ export function obeyRemote(data: { acao?: unknown; valor?: unknown; app?: unknow
 /** Sends the tablet what plays now and which screen shows, as it changes (and every few seconds). */
 export function useReportNowPlaying(frame: { current: HTMLIFrameElement | null }, origin: string | null): void {
   const track = useNowPlayingTrack()
+  // YouTube's own player tells the video's title and channel: used when the video was opened by its id (from the
+  // phone's link, with no title yet) or Now Playing has nothing to show.
+  const ytVideo = useYouTube((store) => store.state?.video ?? null)
+  const ytTitle = useYouTube((store) => store.state?.title ?? '')
+  const ytAuthor = useYouTube((store) => store.state?.author ?? '')
+  const ytPlaying = useYouTube((store) => store.state?.state === 1)
   const route = useCabin((state) => state.navigation.route)
   const screen = route.kind === 'app' ? route.app : route.kind
   const brightness = useCabin((state) => state.brightness)
   const message = {
     tipo: 'eucatur:tocando',
     tela: screen,
-    titulo: track?.title ?? '',
-    por: track?.by ?? '',
-    capa: track?.artwork ?? '',
-    tocando: track?.playing ?? false,
+    titulo: track?.title || (ytVideo ? ytTitle : ''),
+    por: track?.by || (ytVideo ? ytAuthor : ''),
+    capa: track?.artwork || (ytVideo ? `https://i.ytimg.com/vi/${ytVideo}/hqdefault.jpg` : ''),
+    tocando: track ? track.playing : ytPlaying,
     brilho: Math.round(brightness * 100),
   }
   const key = JSON.stringify(message)
