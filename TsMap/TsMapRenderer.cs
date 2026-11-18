@@ -58,6 +58,7 @@ namespace TsMap
 
                 foreach (var ferryConnection in _mapper.FerryConnections)
                 {
+                    try {
                     var connections = _mapper.LookupFerryConnection(ferryConnection.FerryPortId);
 
                     foreach (var conn in connections)
@@ -109,6 +110,7 @@ namespace TsMap
 
                         g.DrawBeziers(ferryPen, bezierPoints.ToArray());
                     }
+                } catch (Exception) { /* Eucatur: item do mapa ilegível (mapa protegido) — pula */ }
                 }
                 ferryPen.Dispose();
             }
@@ -120,6 +122,7 @@ namespace TsMap
                 var drawingQueue = new List<TsPrefabPolyLook>();
                 foreach (var mapArea in _mapper.MapAreas)
                 {
+                    try {
                     if (!activeDlcGuards.Contains(mapArea.DlcGuard) ||
                         mapArea.IsSecret && !renderFlags.IsActive(RenderFlags.SecretRoads) ||
                         mapArea.X < startPoint.X - itemDrawMargin || mapArea.X > endPoint.X + itemDrawMargin ||
@@ -160,11 +163,14 @@ namespace TsMap
                         Color = fillColor,
                         ZIndex = zIndex
                     });
+                } catch (Exception) { /* Eucatur: item do mapa ilegível (mapa protegido) — pula */ }
                 }
 
                 foreach (var mapArea in drawingQueue.OrderBy(p => p.ZIndex))
                 {
+                    try {
                     mapArea.Draw(g);
+                } catch (Exception) { /* Eucatur: item do mapa ilegível (mapa protegido) — pula */ }
                 }
             }
             var mapAreaTime = DateTime.Now.Ticks - mapAreaStartTime;
@@ -176,6 +182,7 @@ namespace TsMap
 
                 foreach (var prefabItem in _mapper.Prefabs)
                 {
+                    try {
                     if (!activeDlcGuards.Contains(prefabItem.DlcGuard) ||
                         prefabItem.IsSecret && !renderFlags.IsActive(RenderFlags.SecretRoads) ||
                         prefabItem.X < startPoint.X - itemDrawMargin || prefabItem.X > endPoint.X + itemDrawMargin ||
@@ -327,11 +334,14 @@ namespace TsMap
                     }
 
                     prefabItem.GetLooks().ForEach(x => drawingQueue.Add(x));
+                } catch (Exception) { /* Eucatur: item do mapa ilegível (mapa protegido) — pula */ }
                 }
 
                 foreach (var prefabLook in drawingQueue.OrderBy(p => p.ZIndex))
                 {
+                    try {
                     prefabLook.Draw(g);
+                } catch (Exception) { /* Eucatur: item do mapa ilegível (mapa protegido) — pula */ }
                 }
             }
             var prefabTime = DateTime.Now.Ticks - prefabStartTime;
@@ -341,6 +351,7 @@ namespace TsMap
             {
                 foreach (var road in _mapper.Roads)
                 {
+                    try {
                     if (!activeDlcGuards.Contains(road.DlcGuard) ||
                         road.IsSecret && !renderFlags.IsActive(RenderFlags.SecretRoads) ||
                         road.X < startPoint.X - itemDrawMargin || road.X > endPoint.X + itemDrawMargin ||
@@ -397,6 +408,7 @@ namespace TsMap
                     }
                     g.DrawCurve(roadPen, road.GetPoints()?.ToArray());
                     roadPen.Dispose();
+                } catch (Exception) { /* Eucatur: item do mapa ilegível (mapa protegido) — pula */ }
                 }
             }
             var roadTime = DateTime.Now.Ticks - roadStartTime;
@@ -406,6 +418,7 @@ namespace TsMap
             {
                 foreach (var mapOverlay in _mapper.OverlayManager.GetOverlays())
                 {
+                    try {
                     if (!activeDlcGuards.Contains(mapOverlay.DlcGuard) ||
                         mapOverlay.IsSecret && !renderFlags.IsActive(RenderFlags.SecretRoads) ||
                         mapOverlay.Position.X < startPoint.X - itemDrawMargin ||
@@ -423,6 +436,7 @@ namespace TsMap
                     g.DrawImage(b, mapOverlay.Position.X - (b.Width / 2f), mapOverlay.Position.Y - (b.Height / 2f),
                         b.Width, b.Height);
 
+                } catch (Exception) { /* Eucatur: item do mapa ilegível (mapa protegido) — pula */ }
                 }
             }
             var mapOverlayTime = DateTime.Now.Ticks - mapOverlayStartTime;
@@ -435,6 +449,7 @@ namespace TsMap
 
                 foreach (var city in _mapper.Cities)
                 {
+                    try {
                     if (city.City.Group != null)
                     {
                         if (renderedCityGroups.Contains(city.City.Group))
@@ -455,6 +470,7 @@ namespace TsMap
                     var textSize = g.MeasureString(name, cityFont);
                     g.DrawString(name, cityFont, _cityShadowColor, coords.X + 2, coords.Y + 2);
                     g.DrawString(name, cityFont, palette.CityName, coords.X, coords.Y);
+                } catch (Exception) { /* Eucatur: item do mapa ilegível (mapa protegido) — pula */ }
                 }
                 cityFont.Dispose();
             }

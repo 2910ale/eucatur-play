@@ -137,8 +137,16 @@ namespace TsMap.Canvas
                 pos.X = (x == 0) ? pos.X : pos.X + (bitmap.Width / zoom) * x; // get tile start coords
                 pos.Y = (y == 0) ? pos.Y : pos.Y + (bitmap.Height / zoom) * y;
 
-                _renderer.Render(g, new Rectangle(0, 0, bitmap.Width, bitmap.Height), zoom, pos, _palette,
-                    renderFlags & ~RenderFlags.TextOverlay);
+                try
+                {
+                    _renderer.Render(g, new Rectangle(0, 0, bitmap.Width, bitmap.Height), zoom, pos, _palette,
+                        renderFlags & ~RenderFlags.TextOverlay);
+                }
+                catch (Exception ex) // Eucatur: mapa protegido — salva o que deu para desenhar
+                {
+                    _erroTiles++;
+                    _ultimoErroTile = ex.Message;
+                }
 
                 Directory.CreateDirectory($"{exportPath}/Tiles/{z}/{x}");
                 bitmap.Save($"{exportPath}/Tiles/{z}/{x}/{y}.png", ImageFormat.Png);
@@ -162,8 +170,13 @@ namespace TsMap.Canvas
             }
         }
 
+        private int _erroTiles;
+        private string _ultimoErroTile = "";
+
         private void GenerateTileMap(int startZoomLevel, int endZoomLevel, string exportPath, bool createTiles, bool saveInfo, RenderFlags renderFlags)
         {
+            _erroTiles = 0;
+            _ultimoErroTile = "";
             if (_isGeneratingTileMap)
             {
                 return;
@@ -218,15 +231,25 @@ namespace TsMap.Canvas
                         }
                     }
                 }
-            }).ContinueWith(_ =>
+            }).ContinueWith(t =>
             {
                 _isGeneratingTileMap = false;
                 RedrawMap();
                 Invoke((Action)(() =>
                 {
                     Activate(); // Bring form to front if minimized
-                    MessageBox.Show("Tile map has been generated!", "TsMap - Tile Map Generation Finished",
-                        MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    // Eucatur: antes dizia "gerado!" mesmo quando dava erro e não gerava nada
+                    if (t.IsFaulted)
+                    {
+                        var ex = t.Exception != null ? t.Exception.GetBaseException() : null;
+                        MessageBox.Show("ERRO ao gerar as imagens do mapa (parou na imagem " + _currentGeneratedTile + " de " + _totalTileCount + "):\n\n" +
+                            (ex != null ? ex.Message : "erro desconhecido") + "\n\nPasta: " + exportPath,
+                            "TsMap - Erro na geração", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                        return;
+                    }
+                    MessageBox.Show("Imagens do mapa geradas! (" + _currentGeneratedTile + " imagens)\n\nPasta: " + exportPath + "\\Tiles" +
+                        (_erroTiles > 0 ? "\n\nAtenção: " + _erroTiles + " imagens saíram incompletas (partes do mapa que não deu para ler). Último erro: " + _ultimoErroTile : ""),
+                        "TsMap - Tile Map Generation Finished", MessageBoxButtons.OK, MessageBoxIcon.Information);
                 }));
             });
         }
