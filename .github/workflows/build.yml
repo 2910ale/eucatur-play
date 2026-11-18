@@ -55,6 +55,8 @@ jobs:
           TEM_CHAVE: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY != '' }}
         run: |
           node -e "const f='app/tauri.conf.json';const c=JSON.parse(require('fs').readFileSync(f,'utf8'));c.version='2.2.${{ github.run_number }}';require('fs').writeFileSync(f,JSON.stringify(c,null,2))"
+          # a tela do caminhão também sabe a própria versão (manda ao site, que avisa quando há uma mais nova)
+          Set-Content -Path ui/.env.local -Value "VITE_EUCATUR_VERSAO=2.2.${{ github.run_number }}"
           # Com a chave de assinatura (segredo TAURI_SIGNING_PRIVATE_KEY): o instalador assinado para a atualização automática.
           if ($env:TEM_CHAVE -eq 'true') {
             node -e "const f='app/tauri.release.conf.json';const c=JSON.parse(require('fs').readFileSync(f,'utf8'));c.bundle.createUpdaterArtifacts=true;require('fs').writeFileSync(f,JSON.stringify(c,null,2))"

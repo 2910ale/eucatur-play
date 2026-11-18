@@ -8,6 +8,9 @@ import { type Typing, useKeyboard } from '../../keyboard/store'
 import { obeyRemote, useReportNowPlaying } from './remoto'
 import './eucatur.css'
 
+/** The build's number (2.2.<build>), set by the Actions build (ui/.env.local); empty in development. */
+const EUCATUR_VERSION: string = (import.meta.env.VITE_EUCATUR_VERSAO as string | undefined) ?? ''
+
 /**
  * Eucatur Play: the Comunidade Eucatur's own screen (its GPS, documents, loads, bank, tachograph and the rest),
  * the community's site in a frame, signed in through the Ponte Eucatur running on the same PC.
@@ -231,7 +234,8 @@ export function EucaturLayer({ shown }: { shown: boolean }) {
     const last = nodes[nodes.length - 1]
     if (last && (nodes.length - 1) % step !== 0) points.push(Math.round(last.position[0]), Math.round(last.position[1]))
     try {
-      tablet.postMessage({ tipo: 'eucatur:rotaJogo', id: route?.id ?? null, pontos: points.length >= 4 ? points : null }, origin)
+      // nov/2026: the Eucatur Play's version goes along (the site warns when there's a newer one)
+      tablet.postMessage({ tipo: 'eucatur:rotaJogo', id: route?.id ?? null, pontos: points.length >= 4 ? points : null, versao: EUCATUR_VERSION }, origin)
       sentRoute.current = { id: route?.id ?? null, at: Date.now() }
     } catch {
       // The page has gone.
