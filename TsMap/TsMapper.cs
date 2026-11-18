@@ -75,6 +75,29 @@ namespace TsMap
                 : Consts.DefaultAtsDlcGuards;
         }
 
+        /// <summary>Eucatur: quantos arquivos de definição não deu para ler (mapa protegido ou parte faltando).</summary>
+        public int ArquivosIgnorados { get; private set; }
+
+        /// <summary>Eucatur: texto de um .sii/.sui; null se o arquivo não existe, não abre ou está em formato que não dá para ler.</summary>
+        private static string LerTextoDef(UberFile file)
+        {
+            try
+            {
+                if (file == null || file.Entry == null) return null;
+                var data = file.Entry.Read();
+                if (data == null || data.Length < 4) return null;
+                var magic = MemoryHelper.ReadUInt32(data, 0);
+                if (magic == 21720627) return MemoryHelper.Decrypt3Nk(data); // 3nK
+                if (data[0] == (byte)'B' && data[1] == (byte)'S' && data[2] == (byte)'I' && data[3] == (byte)'I') return null; // SII binário
+                return Encoding.UTF8.GetString(data);
+            }
+            catch (Exception ex)
+            {
+                Logger.Instance.Warning($"[eucatur] arquivo ilegivel: {ex.Message}");
+                return null;
+            }
+        }
+
         private void ParseCityFiles()
         {
             var defDirectory = UberFileSystem.Instance.GetDirectory("def");
@@ -88,8 +111,10 @@ namespace TsMap
             {
                 var cityFile = UberFileSystem.Instance.GetFile($"def/{cityFileName}");
 
-                var data = cityFile.Entry.Read();
-                var lines = Encoding.UTF8.GetString(data).Split('\n');
+                // Eucatur: mapa protegido / parte faltando — pula o arquivo em vez de fechar o programa
+                var texto = LerTextoDef(cityFile);
+                if (texto == null) { Logger.Instance.Warning($"[eucatur] city: arquivo ilegivel ignorado"); ArquivosIgnorados++; continue; }
+                var lines = texto.Split('\n');
                 foreach (var line in lines)
                 {
                     if (line.TrimStart().StartsWith("#")) continue;
@@ -119,8 +144,10 @@ namespace TsMap
             {
                 var countryFile = UberFileSystem.Instance.GetFile($"def/{countryFilePath}");
 
-                var data = countryFile.Entry.Read();
-                var lines = Encoding.UTF8.GetString(data).Split('\n');
+                // Eucatur: mapa protegido / parte faltando — pula o arquivo em vez de fechar o programa
+                var texto = LerTextoDef(countryFile);
+                if (texto == null) { Logger.Instance.Warning($"[eucatur] country: arquivo ilegivel ignorado"); ArquivosIgnorados++; continue; }
+                var lines = texto.Split('\n');
                 foreach (var line in lines)
                 {
                     if (line.TrimStart().StartsWith("#")) continue;
@@ -151,8 +178,10 @@ namespace TsMap
                 if (!prefabFileName.StartsWith("prefab")) continue;
                 var prefabFile = UberFileSystem.Instance.GetFile($"def/world/{prefabFileName}");
 
-                var data = prefabFile.Entry.Read();
-                var lines = Encoding.UTF8.GetString(data).Split('\n');
+                // Eucatur: mapa protegido / parte faltando — pula o arquivo em vez de fechar o programa
+                var texto = LerTextoDef(prefabFile);
+                if (texto == null) { Logger.Instance.Warning($"[eucatur] prefab: arquivo ilegivel ignorado"); ArquivosIgnorados++; continue; }
+                var lines = texto.Split('\n');
 
                 var token = 0UL;
                 var path = "";
@@ -215,8 +244,10 @@ namespace TsMap
                 if (!roadLookFileName.StartsWith("road")) continue;
                 var roadLookFile = UberFileSystem.Instance.GetFile($"def/world/{roadLookFileName}");
 
-                var data = roadLookFile.Entry.Read();
-                var lines = Encoding.UTF8.GetString(data).Split('\n');
+                // Eucatur: mapa protegido / parte faltando — pula o arquivo em vez de fechar o programa
+                var texto = LerTextoDef(roadLookFile);
+                if (texto == null) { Logger.Instance.Warning($"[eucatur] road_look: arquivo ilegivel ignorado"); ArquivosIgnorados++; continue; }
+                var lines = texto.Split('\n');
                 TsRoadLook roadLook = null;
 
                 foreach (var line in lines)
@@ -268,8 +299,10 @@ namespace TsMap
             {
                 var ferryConnectionFile = UberFileSystem.Instance.GetFile(ferryConnectionFilePath);
 
-                var data = ferryConnectionFile.Entry.Read();
-                var lines = Encoding.UTF8.GetString(data).Split('\n');
+                // Eucatur: mapa protegido / parte faltando — pula o arquivo em vez de fechar o programa
+                var texto = LerTextoDef(ferryConnectionFile);
+                if (texto == null) { Logger.Instance.Warning($"[eucatur] ferry: arquivo ilegivel ignorado"); ArquivosIgnorados++; continue; }
+                var lines = texto.Split('\n');
 
                 TsFerryConnection conn = null;
 

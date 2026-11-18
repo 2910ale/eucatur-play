@@ -185,7 +185,10 @@ namespace TsMap.Eucatur
             var size = new FileInfo(path).Length / (1024.0 * 1024.0);
             var resumo = $"Navegacao exportada: {nodes.Count} nos, {roadEdges} trechos de estrada, {prefabEdges} conversoes em cruzamentos, " +
                          $"{companyJson.Count} empresas, {cityCount} cidades ({size:0.0} MB). Prefabs sem curvas: {prefabsSemCurva}, sem ligacao: {prefabsSemLigacao}.\n" +
-                         $"Pontos parecidos com radar/lombada/etc.: {pontos} (veja pontos-resumo.txt).";
+                         $"Pontos parecidos com radar/lombada/etc.: {pontos} (veja pontos-resumo.txt)." +
+                         (m.ArquivosIgnorados > 0
+                             ? $"\n\nATENCAO: {m.ArquivosIgnorados} arquivos de definicao do mapa nao puderam ser lidos (mapa protegido ou falta uma parte do mapa na lista de mods). Confira se as estradas e cidades estao completas."
+                             : "");
             Logger.Instance.Info(resumo);
             return resumo;
         }
